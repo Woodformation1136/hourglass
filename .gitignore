@@ -1,0 +1,7 @@
+# ignore snakemake outputs
+.snakemake/*
+outputs/*
+logs/*
+nohup-out/*
+references/*
+src/*
