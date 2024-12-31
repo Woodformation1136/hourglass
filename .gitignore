@@ -5,3 +5,8 @@ logs/*
 nohup-out/*
 references/*
 src/*
+test/*
+rawdata/*
+*tmp*
+*__pycache__*
+.vscode/*
