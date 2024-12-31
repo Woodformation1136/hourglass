@@ -5,7 +5,7 @@ logs/*
 nohup-out/*
 references/*
 src/*
-test/*
+*test*
 rawdata/*
 *tmp*
 *__pycache__*
