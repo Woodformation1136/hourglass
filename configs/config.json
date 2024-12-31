@@ -296,10 +296,10 @@
                 "egr_nextseq_batch1", "egr_nextseq_batch2",
                 "tar_tenx_batch1",
                 "tar_nextseq_batch1", "tar_nextseq_batch2",
-                "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch3", "lch_tenx_batch4", "lch_tenx_batch5"
+                "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch5"
             ],
             "params": {
-                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-13,11,-14,12,-15,9,13",
+                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-15,9,11",
                 "n_feature_cutoff_on_sample": 2000,
                 "n_barcode_cutoff_on_sample": 100,
                 "n_pcs": 30
@@ -313,13 +313,13 @@
                 "egr_nextseq_batch1", "egr_nextseq_batch2",
                 "tar_tenx_batch1",
                 "tar_nextseq_batch1", "tar_nextseq_batch2",
-                "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch3", "lch_tenx_batch4", "lch_tenx_batch5",
+                "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch5",
                 "ath_leaf",
                 "ath_root_bio1", "ath_root_bio2", "ath_root_bio3",
                 "osa_root_bio1", "osa_root_bio2"
             ],
             "params": {
-                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-13,11,-14,12,-15,9,13,-17,-18,15,-19,16,-16,14,17,-20,-21,18,19",
+                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-13,9,11,-15,-16,13,-17,14,-14,12,15,-18,-19,16,17",
                 "n_feature_cutoff_on_sample": 2000,
                 "n_barcode_cutoff_on_sample": 100,
                 "n_pcs": 30
