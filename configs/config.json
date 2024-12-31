@@ -6,7 +6,7 @@
     "volumes": [
         {
             "name": "working_directory",
-            "host": "/home/b05b01002/SSD3/project_scRNA_editing/snakemake",
+            "host": "/home/b05b01002/SSD3/project_scRNA/snakemake",
             "container": "/local",
             "mode": "rw",
             "is_workspace": true
@@ -21,10 +21,196 @@
     ],
     "samples": [
         {
-            "name": "tung_batch1",
+            "name": "ptr_tenx_batch1",
             "platform": "10x",
             "species": "ptr",
-            "fastq_path": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch1/fastq_path/HS18186/YCL/"
+            "sample_names": "YCL",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch1/fastq_path/HS18186/YCL/"
+            ],
+            "results_old": {
+                "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_count_TenX_Ptr/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
+                "colors": ["#1F77B4","#8C564B","#FF7F0F","#2AA02A","#F8E71C","#9467BD","#D62728","#E377C2","#9B9B9B","#4B4B4B"]
+            } 
+        },
+        {
+            "name": "ptr_tenx_batch2",
+            "platform": "10x",
+            "species": "ptr",
+            "sample_names": "PTR",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch2/TEN_Populus_trichocarpa_Batch2_20G_150bp/rawData",
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch2/TEN_Populus_trichocarpa_Batch2_80G_150bp/rawData"
+            ]
+        },
+        {
+            "name": "ptr_nextseq_batch1",
+            "platform": "nextseq",
+            "species": "ptr",
+            "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ptr_batch1",
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Pt_CDS.txt"
+        },
+        {
+            "name": "ptr_nextseq_batch2",
+            "platform": "nextseq",
+            "species": "ptr",
+            "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ptr_batch2",
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Pt_CDS.txt"
+        },
+        {
+            "name": "egr_tenx_batch1",
+            "platform": "10x",
+            "species": "egr",
+            "sample_names": "EGR",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Eucalyptus_grandis/FASTQ/1/rawData",
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Eucalyptus_grandis/FASTQ/2/rawData"
+            ] 
+        },
+        {
+            "name": "egr_nextseq_batch1",
+            "platform": "nextseq",
+            "species": "egr",
+            "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Egr_batch1",
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt",
+            "results_old": {
+                "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
+                "colors": ["#9467BD","#F8E71C","#8C564B","#1F77B4","#2AA02A","#FF7F0F","#D62728","#E377C2","#4B4B4B","#9B9B9B"]
+            }
+        },
+        {
+            "name": "egr_nextseq_batch2",
+            "platform": "nextseq",
+            "species": "egr",
+            "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Egr_batch2",
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt"
+        },
+        {
+            "name": "tar_tenx_batch1",
+            "platform": "10x",
+            "species": "tar",
+            "sample_names": "TAR",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Trochodendron_aralioides/rawData"
+            ]
+        },
+        {
+            "name": "tar_nextseq_batch1",
+            "platform": "nextseq",
+            "species": "tar",
+            "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Tar_batch1",
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt",
+            "results_old": {
+                "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar/outs/analysis/clustering/kmeans_18_clusters/clusters.csv",
+                "colors": ["#1F77B4","#E377C2","#55A3FF","#8C564B","#9467BD","#FF7F0F","#46CBE5","#F8E71C","#2AA02A","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B"]
+            }
+        },
+        {
+            "name": "tar_nextseq_batch2",
+            "platform": "nextseq",
+            "species": "tar",
+            "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Tar_batch2",
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt"
+        },
+        {
+            "name": "lch_tenx_batch1",
+            "platform": "10x",
+            "species": "lch",
+            "sample_names": "scRNAseq-1,scRNAseq-2,scRNAseq-3,scRNAseq-4",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch1/Rawdata/scRNAseq"
+            ],
+            "results_old": {
+                "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Lch/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
+                "colors": ["#1F77B4","#8C564B","#FF7F0F","#D62728","#F8E71C","#E377C2","#9467BD","#2AA02A","#63EE9B","#9B9B9B"]
+            }
+        },
+        {
+            "name": "lch_tenx_batch2",
+            "platform": "10x",
+            "species": "lch",
+            "sample_names": "M1-1",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch2_Batch3/Rawdata/M1/"
+            ]
+        },
+        {
+            "name": "lch_tenx_batch3",
+            "platform": "10x",
+            "species": "lch",
+            "sample_names": "W3-1",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch2_Batch3/Rawdata/W3"
+            ]
+        },
+        {
+            "name": "lch_tenx_batch4",
+            "platform": "10x",
+            "species": "lch",
+            "sample_names": "W5-1",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch4/Rawdata/W5/"
+            ]
+        },
+        {
+            "name": "lch_tenx_batch5",
+            "platform": "10x",
+            "species": "lch",
+            "sample_names": "LCH",
+            "fastq_path": [
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch5/FASTQ/1/rawData/",
+                "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch5/FASTQ/2/rawData/"
+            ]
+        },
+        {
+            "name": "ath_leaf",
+            "platform": "10x",
+            "species": "ath",
+            "sample_names": "NA",
+            "matrix_path": "rawdata/Ath_leaf/Leaf-HVYNNBBXX/filtered_gene_bc_matrices_h5.h5",
+            "id_mapping": "rawdata/Ath_leaf/Leaf-HVYNNBBXX/filtered_gene_bc_matrices/Arabidopsis/genes.tsv"
+        },
+        {
+            "name": "ath_root_bio1",
+            "platform": "10x",
+            "species": "ath",
+            "sample_names": "TAIR10",
+            "matrix_path": "rawdata/Ath_root/Sample_WT-WERGFP/filtered_gene_bc_matrices.h5_56580888b0.h5",
+            "id_mapping": "rawdata/Ath_root/Sample_WT-WERGFP/filtered_gene_bc_matrices/TAIR10/genes.tsv"
+        },
+        {
+            "name": "ath_root_bio2",
+            "platform": "10x",
+            "species": "ath",
+            "sample_names": "TAIR10",
+            "matrix_path": "rawdata/Ath_root/Sample_WT-WERGFP_2/filtered_gene_bc_matrices.h5_56618d5a22.h5",
+            "id_mapping": "rawdata/Ath_root/Sample_WT-WERGFP_2/filtered_gene_bc_matrices/TAIR10/genes.tsv"
+        },
+        {
+            "name": "ath_root_bio3",
+            "platform": "10x",
+            "species": "ath",
+            "sample_names": "TAIR10",
+            "matrix_path": "rawdata/Ath_root/Sample_WT-WERGFP_3/filtered_gene_bc_matrices.h5_5667bcf16.h5",
+            "id_mapping": "rawdata/Ath_root/Sample_WT-WERGFP_3/filtered_gene_bc_matrices/TAIR10/genes.tsv"
+        },
+        {
+            "name": "osa_root_bio1",
+            "platform": "10x",
+            "species": "osa",
+            "sample_names": "osRoot1",
+            "fastq_path": [
+                "rawdata/Osa_root/"
+            ]
+        },
+        {
+            "name": "osa_root_bio2",
+            "platform": "10x",
+            "species": "osa",
+            "sample_names": "osRoot2",
+            "fastq_path": [
+                "rawdata/Osa_root"
+            ]
         }
     ],
     "references": [
@@ -33,6 +219,124 @@
             "assembly": "references/Ptr/assembly/Ptrichocarpa_533_v4.0.fa",
             "annotation-gff": "references/Ptr/annotation/Ptrichocarpa_533_v4.1.gene_exons.gff3",
             "annotation-gtf": "references/Ptr/annotation/Ptrichocarpa_533_v4.1.gene_exons.gtf"
+        },
+        {
+            "species": "egr",
+            "assembly": "references/Egr/Phytozome/PhytozomeV12/Egrandis/assembly/Egrandis_297_v2.0.fa",
+            "annotation-gff": "references/Egr/Phytozome/PhytozomeV12/Egrandis/annotation/Egrandis_297_v2.0.gene_exons.gff3",
+            "annotation-gtf": "references/Egr/Phytozome/PhytozomeV12/Egrandis/annotation/Egrandis_297_v2.0.gene_exons.gtf"
+        },
+        {
+            "species": "tar",
+            "assembly": "references/Tar/Trochodendron_aralioides_chromosomes.fa",
+            "annotation-gff": "references/Tar/Trochodendron_aralioides_chromosomes_pasa2.longest.filter.gff3",
+            "annotation-gtf": "references/Tar/Trochodendron_aralioides_chromosomes_pasa2.longest.filter.gtf"
+        },
+        {
+            "species": "lch",
+            "assembly": "references/Lch/Lich.1_0.fa",
+            "annotation-gff": "references/Lch/Lich.1_0.gff",
+            "annotation-gtf": "/home/woodydrylab/HDD/GenomicsData/Liriodendron_chinense/Liriodendron_chinense_20191212/Liriodendron_chinense_addGeneIDandExon.gtf"
+        },
+        {
+            "species": "osa",
+            "assembly": "references/Osa/assembly/Oryza_sativa.IRGSP-1.0.dna_sm.toplevel.fa",
+            "annotation-gff": "references/Osa/annotation/Oryza_sativa.IRGSP-1.0.60.chr.gff3",
+            "annotation-gtf": "references/Osa/annotation/Oryza_sativa.IRGSP-1.0.60.chr.gtf"
+        },
+        {
+            "species": "ath",
+            "assembly": "references/Ath/phytozome/Athaliana/Araport11/assembly/Athaliana_447_TAIR10.fa",
+            "annotation-gff": "references/Ath/phytozome/Athaliana/Araport11/annotation/Athaliana_447_Araport11.gene.gff3",
+            "annotation-gtf":"references/Ath/phytozome/Athaliana/Araport11/annotation/Athaliana_447_Araport11.gene.gtf" 
+        
         }
-    ]
+    ],
+    "seurat_integrated": {
+        "ptr_tenx_batch1": {
+            "member": [
+                "ptr_tenx_batch1"
+            ],
+            "params": {
+                "integration_order": null,
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "n_pcs": 30
+            }
+        },
+        "ptr_tenx": {
+            "member": [
+                "ptr_tenx_batch1",
+                "ptr_tenx_batch2"
+            ],
+            "params": {
+                "integration_order": "-1,-2",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "n_pcs": 30
+            }
+        },
+        "ptr_all": {
+            "member": [
+                "ptr_tenx_batch1", "ptr_tenx_batch2",
+                "ptr_nextseq_batch1", "ptr_nextseq_batch2"
+            ],
+            "params": {
+                "integration_order": "-1,-2,-3,-4,1,2",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "n_pcs": 30
+            }
+        },
+        "four_trees": {
+            "member": [
+                "ptr_tenx_batch1", "ptr_tenx_batch2",
+                "ptr_nextseq_batch1", "ptr_nextseq_batch2",
+                "egr_tenx_batch1",
+                "egr_nextseq_batch1", "egr_nextseq_batch2",
+                "tar_tenx_batch1",
+                "tar_nextseq_batch1", "tar_nextseq_batch2",
+                "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch3", "lch_tenx_batch4", "lch_tenx_batch5"
+            ],
+            "params": {
+                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-13,11,-14,12,-15,9,13",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "n_pcs": 30
+            }
+        },
+        "test_all": {
+            "member": [
+                "ptr_tenx_batch1", "ptr_tenx_batch2",
+                "ptr_nextseq_batch1", "ptr_nextseq_batch2",
+                "egr_tenx_batch1",
+                "egr_nextseq_batch1", "egr_nextseq_batch2",
+                "tar_tenx_batch1",
+                "tar_nextseq_batch1", "tar_nextseq_batch2",
+                "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch3", "lch_tenx_batch4", "lch_tenx_batch5",
+                "ath_leaf",
+                "ath_root_bio1", "ath_root_bio2", "ath_root_bio3",
+                "osa_root_bio1", "osa_root_bio2"
+            ],
+            "params": {
+                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-13,11,-14,12,-15,9,13,-17,-18,15,-19,16,-16,14,17,-20,-21,18,19",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "n_pcs": 30
+            }
+        },
+        "group1": {
+            "member": [
+                "tung_batch1",
+                "egr_nextseq_batch1"
+            ],
+            "params": {
+                "integration_order": "-1,-2",
+                "k_nearest_neighbor": 3,
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "n_pcs": 30
+            }
+        }
+    }
 }
