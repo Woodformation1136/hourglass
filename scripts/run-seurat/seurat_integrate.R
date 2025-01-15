@@ -1,10 +1,18 @@
 library(Seurat)
 library(magrittr)
 library(R.utils)
+library(future)
 source("scripts/run-seurat/utils.R", chdir = TRUE)
 
 # # parse arguments
 parse_arguments()
+
+# set up future
+maxSize_gb <- 50
+options(future.globals.maxSize= maxSize_gb*1000*1024^2)
+plan("multicore", workers = as.integer(threads))
+plan()
+
 
 # create output directory
 if (!dir.exists(dirname(output_pca_projection_csv))) {
@@ -42,7 +50,8 @@ if (length(object.list) > 1) {
     combined.sct <- custom_integration_pipeline_1(
         object.list = object.list,
         sample.tree = build_seurat_sample_tree(integration_order),
-        n_pcs = as.integer(n_pcs)
+        n_pcs = as.integer(n_pcs),
+        nfeatures = as.integer(nfeatures)
     )
 } else {
     message("Only one sample found, running SCTransform_and_PCA")
