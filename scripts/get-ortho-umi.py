@@ -1,7 +1,4 @@
-import sys
-import gzip
 import argparse
-import numpy as np
 import pandas as pd
 
 # create argument parser
@@ -47,7 +44,19 @@ if args.id_mapping:
         ortho_info = ortho_info[ortho_info["species_name"] == "ArT"]
         gene_id = [gene.split(".")[0] for gene in ortho_info["gene_name"]]
         ortho_info["gene_name"] = [id_mapping.get(gene, None) for gene in gene_id]
-
+    if "Osa" in args.id_mapping:
+        # get transcript id to gene id mapping
+        id_mapping = dict()
+        with open(args.id_mapping) as f:
+            for line in f:
+                id_mapping[line.split("\t")[0]] = line.split("\t")[1].strip()
+        
+        # convert id in ortho_info to gene id
+        ortho_info = ortho_info[ortho_info["species_name"] == "OrS"]
+        ortho_info["gene_name"] = [id_mapping.get(gene, None) for gene in ortho_info["gene_name"]]
+        
+        
+        
 # TODO: read feature-barcode matrix
 barcodes = pd.read_csv(
     f"{args.feature_bc_mat}/barcodes.tsv.gz",
@@ -76,11 +85,13 @@ species_name = ortho_info[ortho_info["gene_name"] == values["feature"][0]]["spec
 species_ortho_info = ortho_info[ortho_info["species_name"] == species_name]
 gene2cluster =  dict(zip(species_ortho_info["gene_name"], species_ortho_info["cluster_id"]))
 values["ortho_feature"] = values["feature"].map(
-    lambda gene_name: gene2cluster[gene_name]
+    lambda gene_name: gene2cluster.get(gene_name, None)
 )
+values = values.dropna()
 
 # group by ["barcode", "ortho_feature"] and sum counts
 values = values.groupby(["barcode", "ortho_feature"]).sum().reset_index()
+values["ortho_feature"] = values["ortho_feature"].astype(int)
 # values["ortho_feature"] = "Cluster_" + values["ortho_feature"].astype(str)
 # create barcode-feature matrix
 
