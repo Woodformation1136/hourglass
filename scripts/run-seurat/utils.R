@@ -121,6 +121,7 @@ custom_integration_pipeline_1 <- function(
         anchorset = anchors,
         sample.tree = sample.tree,
         normalization.method = "SCT",
+        preserve.order = TRUE,
         verbose = verbose
     )
     combined.sct <- RunPCA(
