@@ -22,6 +22,7 @@ build_seurat_sample_tree <- function(integration_order) {
         unlist() %>%
         as.numeric() %>%
         matrix(ncol = 2, byrow = TRUE)
+    message("sample.tree: ", str(sample.tree))
     return(sample.tree)
 }
 
@@ -83,6 +84,66 @@ qc_seurat_object <- function(
     return(is_pass_both)
 }
 
+custom_integration_pipeline_2  <- function(
+    object.list,
+    sample.tree,
+    n_pcs = 30,
+    nfeatures = 2000,
+    verbose = TRUE
+) {
+    # This function integrate samples using old seurat pipeline as used in 
+    # our previous paper (DOI: https://doi.org/10.1186/s13059-022-02845-1)
+    message("Running custom integration pipeline 2")
+    message("Reference:", "https://github.com/Woodformation1136/SingleCell/blob/main/Part1/6S_SC_Integration_with_Seurat/4S/20210512_CCA_4S.R")
+
+    # normalize data
+    object.list <- lapply(
+        object.list,
+        function(x) {
+            x <- NormalizeData(
+                x,
+                normalization.method = "LogNormalize",
+                scale.factor = 10000
+            )
+            return(x)
+        }
+    )
+    # identify variable features
+    object.list <- lapply(
+        object.list,
+        function(x) {
+            x <- FindVariableFeatures(
+                x,
+                selection.method = "vst",
+                nfeatures = nfeatures
+            )
+            return(x)
+        }
+    )
+    # find integration anchors
+    anchors <- FindIntegrationAnchors(
+        object.list = object.list,
+        anchor.features = nfeatures,
+        scale = TRUE,
+        reduction = "cca",
+        l2.norm = TRUE,
+        k.anchor = 5
+    )
+    # integrate data
+    combined <- IntegrateData(
+        anchorset = anchors,
+        sample.tree = sample.tree,
+        preserve.order = TRUE,
+    )
+    # run pca
+    combined <- combined %>% ScaleData() %>% RunPCA(npcs = n_pcs)
+
+    return(combined)
+}
+
+
+# unused
+# =============================================================================
 custom_integration_pipeline_1 <- function(
     object.list,
     sample.tree,
