@@ -98,60 +98,68 @@ custom_metacell_pipeline <- function(
     coc_id="coc",
     mc_id="mc",
     mc2d_id="mc2d",
-    scm_n_downsamp_gstat=NULL
+    scm_n_downsamp_gstat=NULL,
+    T_tot=NULL, 
+    T_top3=NULL,
+    T_szcor=NULL,
+    T_vm=NULL,
+    T_niche=NULL,
+    K=NULL,
+    min_mc_size=NULL,
+    alpha=NULL
 )   {
-    # select gene markers for metacell grouping
-    if (!is.null(scm_n_downsamp_gstat)) {
-        message(
-            "custom_metacell_pipeline: ",
-            "Setting n_downsamp_gstat to ", scm_n_downsamp_gstat
-        )
-        tgconfig::set_param(
-            "scm_n_downsamp_gstat",
-            as.integer(scm_n_downsamp_gstat),
-            "metacell"
-        )
-        if (scm_n_downsamp_gstat != tgconfig::get_param("scm_n_downsamp_gstat", "metacell")) {
-            stop(
-                "custom_metacell_pipeline: ",
-                "Failed to set n_downsamp_gstat to ", scm_n_downsamp_gstat
-            )
-        } 
+    # # select gene markers for metacell grouping
+    # if (!is.null(scm_n_downsamp_gstat)) {
+    #     message(
+    #         "custom_metacell_pipeline: ",
+    #         "Setting n_downsamp_gstat to ", scm_n_downsamp_gstat
+    #     )
+    #     tgconfig::set_param(
+    #         "scm_n_downsamp_gstat",
+    #         as.integer(scm_n_downsamp_gstat),
+    #         "metacell"
+    #     )
+    #     if (scm_n_downsamp_gstat != tgconfig::get_param("scm_n_downsamp_gstat", "metacell")) {
+    #         stop(
+    #             "custom_metacell_pipeline: ",
+    #             "Failed to set n_downsamp_gstat to ", scm_n_downsamp_gstat
+    #         )
+    #     } 
+    # }
+    
+    # get marker genes if not already computed
+    if (is.null(scdb_gset(gset_id))) {
+        message("custom_metacell_pipeline: Computing gene markers")
+        # calculate gene stats
+        mcell_add_gene_stat(
+            gstat_id = gstat_id,
+            mat_id = mat_id,
+            force = T
+        ) # compute gene stats
+        print(summary(scdb_gstat(gstat_id)))
+        mcell_gset_filter_multi(
+            gstat_id = gstat_id,
+            gset_id = gset_id,
+            T_tot = T_tot,
+            T_top3 = T_top3,
+            T_szcor = T_szcor,
+            T_vm = T_vm,
+            T_niche = T_niche,
+            force_new = T
+        ) # select gene markers
     }
-    # calculate gene stats
-    gstat <- scm_gene_stat(
-        mat_id,
-        niche_quantile = 0.2,
-        downsample_n = NULL,
-        K_std_n = 1
-    )
-    mcell_add_gene_stat(
-        gstat_id = gstat_id,
-        mat_id = mat_id,
-        force = T
-    ) # compute gene stats
-    mcell_gset_filter_multi(
-        gstat_id = gstat_id,
-        gset_id = gset_id,
-        T_tot = 20,
-        T_top3 = 1,
-        T_szcor = -0.01,
-        T_vm = 0.2,
-        T_niche = 0.05,
-        force_new = T
-    ) # select gene markers
     # group cells
     mcell_add_cgraph_from_mat_bknn(
         mat_id = mat_id,
         gset_id = gset_id,
         graph_id = graph_id,
-        K = 40,
+        K = K,
         dsamp = F
-    ) # build graph
+    ) # build graph (K is the target number of edges)
     mcell_coclust_from_graph_resamp(
         coc_id = coc_id,
         graph_id = graph_id,
-        min_mc_size = 50,
+        min_mc_size = min_mc_size,
         p_resamp = 0.75,
         n_resamp = 1000
     ) # cocluster by bootstraping
@@ -160,9 +168,9 @@ custom_metacell_pipeline <- function(
         mat_id = mat_id,
         coc_id = coc_id,
         mc_id = mc_id,
-        K = 40,
-        min_mc_size = 50,
-        alpha = 3
+        K = K,
+        min_mc_size = min_mc_size,
+        alpha = alpha
     ) # final grpah
     # force-directed projection of the k-nn graph
     mcell_mc2d_force_knn(
@@ -173,26 +181,77 @@ custom_metacell_pipeline <- function(
 }
 
 plot_metacell <- function(
-    sc_projections,
-    mc_projections=NULL,
-    palette=NULL,
-    output_pdf
+    mc2d_id = "mc2d",
+    cell_ident,
+    palette = NULL,
+    mc_projections = NULL
 ) {
-    # create output directory 
-    if (!dir.exists(dirname(output_pdf))) {
-        dir.create(dirname(output_pdf), recursive = TRUE)
-    }
-    
-    # load p
+    # get sc_projections
+    sc_projections <- data.frame(
+        "X" = scdb_mc2d(mc2d_id)@sc_x,
+        "Y" = scdb_mc2d(mc2d_id)@sc_y
+    )
+    sc_projections$Barcode <- rownames(sc_projections)
+
+    # merge cell_ident to sc_projections
+    sc_projections %<>% dplyr::inner_join(cell_ident, by = c("Barcode" = "Barcode"))
+    sc_projections$Cluster <- as.factor(sc_projections$Cluster)
+
+    # create palette if not provided
     if (is.null(palette)) {
         c2c_mapping <- sc_projections[, c("Cluster", "Color")] %>% unique
         palette <- c2c_mapping$Color
         names(palette) <- c2c_mapping$Cluster %>% as.character
-    } else {
-        palette <- fromJSON(palette)
     }
     
-    if (is.null(mc_projections)) {
+    # plot
+    p <- ggplot(
+        sc_projections,
+        aes(X,Y)
+    ) + geom_point(
+            data = sc_projections,
+            aes(X, Y, color = Cluster),
+            size = .8,
+            show.legend = FALSE
+        ) + scale_color_manual(
+            values = palette
+        ) + coord_fixed(
+            ratio = 1
+        )
     
+    if (!is.null(mc_projections)) {
+        # get metacell coordinate and edges
+        fr <- mc2d@graph$mc1
+        to <- mc2d@graph$mc2
+        # NOTE: plot only metacell number: 1,2,3,4,5,6,7,8,9,10,18,19,20
+        edges <- data.frame(
+            X_start = mc2d@mc_x[fr],
+            Y_start = mc2d@mc_y[fr],
+            X_end = mc2d@mc_x[to],
+            Y_end = mc2d@mc_y[to]
+        )
+        edges[fr %in% c(1,2,3,4,5,6,7,8,9,10,18,19,20) & to %in% c(1,2,3,4,5,6,7,8,9,10,18,19,20),] %<>% 
+            dplyr::mutate(
+                X_end = NA,
+                Y_end = NA
+            )
+        # add metacell and edges to plot
+        p <- p + geom_label(
+            data = mc_projections,
+            aes(X, Y, label = rownames(mc_projections)),
+            show.legend = FALSE,
+            fill = NA,
+            size = 5
+        ) + geom_segment(
+            data = edges,
+            aes(
+                x = X_start,
+                y = Y_start,
+                xend = X_end,
+                yend = Y_end
+            ),
+            linewidth = 0.1
+        )
     }
+    return(p)
 }
