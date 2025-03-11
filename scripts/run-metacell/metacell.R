@@ -146,7 +146,8 @@ if (file.exists(output_pdf)) {
     removed <- file.remove(output_pdf)
     if (removed) message("Removed existing file ", output_pdf)
 }
-pdf(file=output_pdf)
+svg(output_pdf, width = 7, height = 7 * as.numeric(ratio))
+par(mar = c(0, 0, 0, 0))
 print(p)
 dev.off()
 # -------------------------------------------------------------

@@ -12,6 +12,7 @@ source("scripts/run-slingshot/utils.R")
 # palette <- "configs/palette_all.json"
 # thresh <- 0.001
 # output_pdf <- "outputs/seurat_integration/groups/four_trees_batch1/rs17/umap2d/slingshot/rs17_egr_nextseq_batch1_all.pdf"
+# output_dir <- "outputs/seurat_integration/groups/four_trees_batch1/rs17/umap2d/slingshot/rs17_egr_nextseq_batch1_all/"
 
 # parse command line arguments and load data
 parse_arguments()
@@ -20,6 +21,15 @@ umap_projection <- read.csv(umap_projection, row.names = 1) # Barcode, UMAP.1, U
 cell_identity <-  read.csv(cell_identity, row.names = 1) # Barcode, Cluster, Color
 lineages_list <- strsplit(lineages, "/")[[1]] %>% lapply(function(x) strsplit(x, ",")[[1]])
 palette <- fromJSON(paste(readLines(palette), collapse=""))
+ratio <- as.numeric(ratio)
+if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+} else {
+    message("Warning: Output directory already exists. Deleting and recreating.")
+    unlink(output_dir, recursive = TRUE)
+    dir.create(output_dir, recursive = TRUE)
+}
+
 # lineages are cluster color codes separated by ','
 # multiple lineages are separated by '/'
 
@@ -40,9 +50,8 @@ colnames(clusterLabels) <- levels(clusters)
 
 # plot slingshot
 # open device based on suffix
-height2width <- 2.7 / 3.77
 width <- 7
-height <- width * height2width
+height <- width * ratio
 if (grepl(".pdf", output_pdf)) {
     pdf(output_pdf, width = width, height = height)
 } else if (grepl(".svg", output_pdf)) {
@@ -132,6 +141,10 @@ for (n in seq_len(length(lineages_list))) {
             cex = 2
         )
     }
+    saveRDS(list(
+        curve_points = curve_points,
+        color = col
+    ), file = file.path(output_dir, paste0("lineage_", n, ".rds")))
 }
 # get lineage 
 # 

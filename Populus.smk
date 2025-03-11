@@ -21,11 +21,11 @@ def query(d:List[dict], k:str, v:str) -> dict:
 # master rule all
 rule all:
     input:
-        umap_x="outputs/Populus/umap/x/ptr_tenx_batch1.pdf",
-        umap_all="outputs/Populus/umap/all/ptr_tenx_batch1.pdf",
-        slingshot_umap_x="outputs/Populus/slingshot/x/ptr_tenx_batch1.pdf",
-        slingshot_umap_all="outputs/Populus/slingshot/all/ptr_tenx_batch1.pdf",
-        metacell_plot="outputs/Populus/metacell/ptr_tenx_batch1.pdf"
+        umap_x="outputs/Populus/umap/x/ptr_tenx_batch1.svg",
+        umap_all="outputs/Populus/umap/all/ptr_tenx_batch1.svg",
+        slingshot_umap_x="outputs/Populus/slingshot/x/ptr_tenx_batch1.svg",
+        slingshot_umap_all="outputs/Populus/slingshot/all/ptr_tenx_batch1.svg",
+        metacell_plot="outputs/Populus/metacell/ptr_tenx_batch1.svg"
 
 # transfer cell identity from Genome Biol. 2023 to new results
 # ==============================================================================
@@ -89,10 +89,11 @@ rule metacell:
         matrix_path="outputs/cellranger/reanalyze/{sample}_rs17/outs/filtered_feature_bc_matrix",
         cell_ident="outputs/Populus/barcode2color/{sample}_rs17_curated.csv"
     output:
-        output_pdf="outputs/Populus/metacell/{sample}.pdf"
+        output_pdf="outputs/Populus/metacell/{sample}.svg"
     params:
         scdb_tmpdir="outputs/Populus/metacell/{sample}_scdb_tmpdir",
         palette="configs/palette.json",
+        ratio=lambda _: 2.7 / 3.77,
         params=get_metacell_params
     log:
         "logs/Populus/metacell/{sample}.log"
@@ -110,6 +111,7 @@ rule metacell:
                     --scdb_tmpdir {params.scdb_tmpdir} \
                     --output_pdf {output.output_pdf} \
                     --palette {params.palette} \
+                    --ratio {params.ratio} \
                     {params.params} \
             2> {log} 1> {log}
         """
@@ -118,13 +120,15 @@ rule metacell:
 # ==============================================================================
 rule slingshot_x:
     input:
-        umap_projection="outputs/cellranger/reanalyze/{sample}_rs17/outs/analysis/umap/gene_expression_2_components/projection.csv",
+        umap_projection="outputs/cellranger/reanalyze/tung_batch1_rs1320763135/outs/analysis/umap/gene_expression_2_components/projection.csv",
         cell_identity="outputs/Populus/barcode2color/{sample}_rs17_curated.csv"
     output:
-        output_pdf="outputs/Populus/slingshot/x/{sample}.pdf"
+        output_pdf="outputs/Populus/slingshot/x/{sample}.svg",
+        output_dir=directory("outputs/Populus/slingshot/x/{sample}/")
     params:
         lineages="3,4,8/6,5,2",
-        palette="configs/palette.json"
+        palette="configs/palette.json",
+        ratio=lambda _: 2.7 / 3.77
     log:    
         "logs/Populus/slingshot/{sample}_x.log"
     shell:
@@ -142,18 +146,22 @@ rule slingshot_x:
                     --lineages {params.lineages} \
                     --palette {params.palette} \
                     --output_pdf {output.output_pdf} \
+                    --output_dir {output.output_dir} \
+                    --ratio {params.ratio} \
             2> {log} 1> {log}
         """
 
 rule slingshot_all:
     input:
-        umap_projection="outputs/cellranger/reanalyze/{sample}_rs17/outs/analysis/umap/gene_expression_2_components/projection.csv",
+        umap_projection="outputs/cellranger/reanalyze/tung_batch1_rs1320763135/outs/analysis/umap/gene_expression_2_components/projection.csv",
         cell_identity="outputs/Populus/barcode2color/{sample}_rs17_curated.csv"
     output:
-        output_pdf="outputs/Populus/slingshot/all/{sample}.pdf"
+        output_pdf="outputs/Populus/slingshot/all/{sample}.svg",
+        output_dir=directory("outputs/Populus/slingshot/all/{sample}/")
     params:
         lineages="3,4,8/6,5,2,7/6,5,2,1",
-        palette="configs/palette_all.json"
+        palette="configs/palette_all.json",
+        ratio=lambda _: 2.7 / 3.77
     log:    
         "logs/Populus/slingshot/{sample}_all.log"
     shell:
@@ -171,32 +179,63 @@ rule slingshot_all:
                     --lineages {params.lineages} \
                     --palette {params.palette} \
                     --output_pdf {output.output_pdf} \
+                    --output_dir {output.output_dir} \
+                    --ratio {params.ratio} \
             2> {log} 1> {log}
         """
 
 # plot umap
 # ==============================================================================
+# rule run_umap:
+#     conda: 
+#         "envs/umap-learn.yaml"
+#     input:
+#         pca_projection="outputs/cellranger/reanalyze/{sample}_rs17/outs/analysis/pca/gene_expression_10_components/projection.csv",
+#     output:
+#         umap_projection="outputs/Populus/umap/projection/{sample}.csv"
+#     params:
+#         params="configs/umap-1sample.json",
+#         random_state=1320763135,
+#         n_component=2,
+#         # random_state=1320763135
+#     log:
+#         "logs/Populus/run-umap/{sample}.log"
+#     shell:
+#         """
+#         # re-run
+#         python scripts/run-umap.py \
+#             --projections_in {input.pca_projection} \
+#             --projections_out {output.umap_projection} \
+#             --params {params.params} \
+#             --random_state {params.random_state} \
+#             --n_component {params.n_component} \
+#         2> {log} 1> {log}
+#         """
+    
+
 rule plot_umap_x:
     conda:
         "envs/bio-pyps.yaml"
     input:
-        umap="outputs/cellranger/reanalyze/{sample}_rs17/outs/analysis/umap/gene_expression_2_components/projection.csv",
+        umap="outputs/cellranger/reanalyze/tung_batch1_rs1320763135/outs/analysis/umap/gene_expression_2_components/projection.csv",
         cell_identity="outputs/Populus/barcode2color/{sample}_rs17_curated.csv"
     output:
-        "outputs/Populus/umap/x/{sample}.pdf"
+        "outputs/Populus/umap/x/{sample}.svg"
     params:
         palette="configs/palette.json",
-        prefix="outputs/Populus/umap/x/{sample}"
+        prefix="outputs/Populus/umap/x/{sample}",
+        ratio=lambda _: 2.7 / 3.77
     log:
         "logs/Populus/umap/x/{sample}.log"
     shell:
         """
-        # rerun
+        # re-run
         python scripts/plot-umap-original.py \
             --cell_embedding {input.umap} \
             --cell_identity {input.cell_identity} \
             --palette {params.palette} \
             --output_fpath {output} \
+            --ratio {params.ratio} \
         2> {log} 1> {log}
         """
 
@@ -204,22 +243,24 @@ rule plot_umap:
     conda:
         "envs/bio-pyps.yaml"
     input:
-        umap="outputs/cellranger/reanalyze/{sample}_rs17/outs/analysis/umap/gene_expression_2_components/projection.csv",
+        umap="outputs/cellranger/reanalyze/tung_batch1_rs1320763135/outs/analysis/umap/gene_expression_2_components/projection.csv",
         cell_identity="outputs/Populus/barcode2color/{sample}_rs17_curated.csv"
     output:
-        "outputs/Populus/umap/all/{sample}.pdf"
+        "outputs/Populus/umap/all/{sample}.svg"
     params:
         palette="configs/palette_all.json",
-        prefix="outputs/Populus/umap/all/{sample}"
+        prefix="outputs/Populus/umap/all/{sample}",
+        ratio=lambda _: 2.7 / 3.77
     log:
         "logs/Populus/umap/all/{sample}.log"
     shell:
         """
-        # rerun
+        # re-run
         python scripts/plot-umap-original.py \
             --cell_embedding {input.umap} \
             --cell_identity {input.cell_identity} \
             --palette {params.palette} \
             --output_fpath {output} \
+            --ratio {params.ratio} \
         2> {log} 1> {log}
         """
