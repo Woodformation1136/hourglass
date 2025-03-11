@@ -9,7 +9,7 @@ argParser = ArgumentParser()
 argParser.add_argument("--projections_in", help="Path to PCA projections CSV file")
 argParser.add_argument("--projections_out", help="Path to output UMAP projections CSV file")
 argParser.add_argument("--params", help="Path to UMAP parameters JSON file")
-argParser.add_argument("--random_state", help="Random state for UMAP", required=False)
+argParser.add_argument("--random_state", help="Random state for UMAP")
 argParser.add_argument("--n_components", help="Number of components for UMAP", required=False)
 argParser.add_argument("--cell_identity", help="Cell identity file name", required=False)
 argParser.add_argument("--target_clusters", help="Target cluster for UMAP", required=False)
@@ -41,6 +41,8 @@ if target_clusters:
 
     
 # run UMAP
+print("Running UMAP with parameters:")
+print(params)
 reducer = umap.UMAP(**params)
 umap_projections = reducer.fit_transform(projections_in)
 out_df = pd.DataFrame(
