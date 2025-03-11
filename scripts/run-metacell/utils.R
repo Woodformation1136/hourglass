@@ -186,6 +186,7 @@ plot_metacell <- function(
     palette = NULL,
     mc_projections = NULL
 ) {
+    par(mar=c(0,0,0,0))
     # get sc_projections
     sc_projections <- data.frame(
         "X" = scdb_mc2d(mc2d_id)@sc_x,
@@ -215,8 +216,19 @@ plot_metacell <- function(
             show.legend = FALSE
         ) + scale_color_manual(
             values = palette
-        ) + coord_fixed(
-            ratio = 1
+        ) + theme(
+            axis.line=element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks=element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            legend.position="none",
+            panel.background=element_blank(),
+            panel.border=element_blank(),
+            panel.grid.major=element_blank(),
+            panel.grid.minor=element_blank(),
+            plot.background=element_blank()
         )
     
     if (!is.null(mc_projections)) {
