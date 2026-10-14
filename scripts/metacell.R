@@ -16,18 +16,20 @@ work_dir <- getwd()
 # output_pdf <- snakemake@output$pdf
 
 
-sample <- "egr_nextseq_batch1_rs17"
-# sample <- "tung_batch1_rs17"
+# sample <- "egr_nextseq_batch1_rs17"
+sample <- "tung_batch1_rs17"
 # sample <- "lch_tenx_batch1_rs17"
 # sample <- "tar_nextseq_batch1_rs17"
 
 # raw UMI count
-# matrix_dir <- sprintf("outputs/cellranger/reanalyze/%s/outs/filtered_feature_bc_matrix", sample)
+matrix_dir <- sprintf("outputs/cellranger/reanalyze/%s/outs/filtered_feature_bc_matrix", sample)
 # output_pdf <- sprintf("test/metacell/%s_raw.pdf", sample)
+output_pdf <- sprintf("test/for_blake/%s_raw.pdf", sample)
+
 
 # corrected orthogroup gene expression count
-matrix_dir <- sprintf("outputs/seurat_integration/group1/rs17/corrected_expression_matrices/%s.csv", sample)
-output_pdf <- sprintf("test/metacell/%s_seurat_ortho.pdf", sample)
+# matrix_dir <- sprintf("outputs/seurat_integration/group1/rs17/corrected_expression_matrices/%s.csv", sample)
+# output_pdf <- sprintf("test/metacell/%s_seurat_ortho.pdf", sample)
 
 # un-corrected orthogroup gene expression count
 # matrix_dir <- sprintf("outputs/seurat_integration/ortho_umi_count/%s.csv", sample)
@@ -47,35 +49,35 @@ if (!dir.exists(scdb_tmpdir)){
 } 
 scdb_init(scdb_tmpdir, force_reinit = T)
 # read the UMI table from 10X format
-# mat <- scmat_read_scmat_10x(
-#     matrix_fn = file.path(matrix_dir, "matrix.mtx.gz"),  
-#     genes_fn = file.path(matrix_dir, "features.tsv.gz"),
-#     cells_fn = file.path(matrix_dir, "barcodes.tsv.gz"),
-#     paralogs_policy = "remove"
-# )
+mat <- scmat_read_scmat_10x(
+    matrix_fn = file.path(matrix_dir, "matrix.mtx.gz"),  
+    genes_fn = file.path(matrix_dir, "features.tsv.gz"),
+    cells_fn = file.path(matrix_dir, "barcodes.tsv.gz"),
+    paralogs_policy = "remove"
+)
 # import the matrix into scdb
-# scdb_add_mat("mat", mat)
+scdb_add_mat("mat", mat)
 
-# read the UMI table from csv format
-read.csv(
-    matrix_dir,
-    header = FALSE,
-    stringsAsFactors = FALSE,
-    row.names = NULL,
-) %>% t %>% 
-write.table(
-    file=sprintf("%s.T", matrix_dir),
-    row.names = FALSE,
-    col.names = FALSE,
-    quote = FALSE,
-    sep = "\t"
-)
-mcell_import_scmat_tsv(
-    mat_nm = "mat",
-    fn = sprintf("%s.T", matrix_dir),
-    dset_nm = "dset"
-)
-unlink(sprintf("%s.T", matrix_dir))
+# # read the UMI table from csv format
+# read.csv(
+#     matrix_dir,
+#     header = FALSE,
+#     stringsAsFactors = FALSE,
+#     row.names = NULL,
+# ) %>% t %>% 
+# write.table(
+#     file=sprintf("%s.T", matrix_dir),
+#     row.names = FALSE,
+#     col.names = FALSE,
+#     quote = FALSE,
+#     sep = "\t"
+# )
+# mcell_import_scmat_tsv(
+#     mat_nm = "mat",
+#     fn = sprintf("%s.T", matrix_dir),
+#     dset_nm = "dset"
+# )
+# unlink(sprintf("%s.T", matrix_dir))
 # -------------------------------------------------------------
 
 # MetaCell analysis
@@ -156,20 +158,30 @@ barcode2color <- read.csv(barcode2color_csv, header = T, stringsAsFactors = F)
 # merge color information to projections
 projections %<>% dplyr::inner_join(barcode2color, by = c("Barcode" = "Barcode"))
 projections$Cluster <- as.factor(projections$Cluster)
+# # NOTE: plot only cells in cluster: 2,3,4,5,6,8
+# projections <- projections %>% filter(Cluster %in% c(2,3,4,5,6,8))
+# NOTE: plot only cells in cluster: 2,3,4,5,6,8 (others as grey)
+projections[!projections$Cluster %in% c(2,3,4,5,6,8), "Color"] <- "whitesmoke"
 # create cluster to color mapping
 c2c_mapping <- projections[, c("Cluster", "Color")] %>% unique
 palette <- c2c_mapping$Color
 names(palette) <- c2c_mapping$Cluster %>% as.character
-# get edges (use NA to break the line)
-fr <- mc2d@graph$mc1
-to <- mc2d@graph$mc2
-edges <- data.frame(
-    X_start = mc2d@mc_x[fr],
-    Y_start = mc2d@mc_y[fr],
-    X_end = mc2d@mc_x[to],
-    Y_end = mc2d@mc_y[to]
-)
-write.csv(mc2d@graph, "test/metacell/graph.csv", row.names = F)
+# # get edges (use NA to break the line)
+# fr <- mc2d@graph$mc1
+# to <- mc2d@graph$mc2
+# # NOTE: plot only metacell number: 1,2,3,4,5,6,7,8,9,10,18,19,20
+# edges <- data.frame(
+#     X_start = mc2d@mc_x[fr],
+#     Y_start = mc2d@mc_y[fr],
+#     X_end = mc2d@mc_x[to],
+#     Y_end = mc2d@mc_y[to]
+# )
+# edges[fr %in% c(1,2,3,4,5,6,7,8,9,10,18,19,20) & to %in% c(1,2,3,4,5,6,7,8,9,10,18,19,20),] %<>% 
+#     dplyr::mutate(
+#         X_end = NA,
+#         Y_end = NA
+#     )
+# write.csv(mc2d@graph, "test/metacell/graph.csv", row.names = F)
 
 # plot
 if (!dir.exists(dirname(output_pdf))) dir.create(dirname(output_pdf))
@@ -187,24 +199,24 @@ ggplot(
     scale_color_manual(
         values = palette
     ) + 
-    coord_fixed(ratio = 1) +
-    geom_label(
-        data = mc_projections,
-        aes(X, Y, label = rownames(mc_projections)),
-        show.legend = FALSE,
-        fill = NA,
-        size = 5
-    ) +
-    geom_segment(
-        data = edges,
-        aes(
-            x = X_start,
-            y = Y_start,
-            xend = X_end,
-            yend = Y_end
-        ),
-        linewidth = 0.1
-    )
+    coord_fixed(ratio = 1) # +
+    # geom_label(
+    #     data = mc_projections,
+    #     aes(X, Y, label = rownames(mc_projections)),
+    #     show.legend = FALSE,
+    #     fill = NA,
+    #     size = 5
+    # ) +
+    # geom_segment(
+    #     data = edges,
+    #     aes(
+    #         x = X_start,
+    #         y = Y_start,
+    #         xend = X_end,
+    #         yend = Y_end
+    #     ),
+    #     linewidth = 0.1
+    # )
 dev.off()
 
 # clean up

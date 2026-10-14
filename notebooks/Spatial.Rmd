@@ -1,0 +1,1138 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Analyzing Populus 10x Visium data from Quanzi
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+# library(readxl)
+library(spacexr)
+library(magrittr)
+```
+
+```{r}
+# paths
+path_spaceranger_out <- "/home/f06b22037/SSD2/JW/spaceranger_count_TenX_stemQuanzi2024_v3/outs/"
+path_cellranger_out <- "outputs/cellranger/reanalyze/ptr_tenx_batch1_rs17/outs/filtered_feature_bc_matrix/"
+path_xylem_coordinate <- "/home/woodydrylab/FileShare/Stereoseq_raw_data/F24A040007172_PLAkisaT_0906/processed/JW/BGI_SAW_out/scRNA_stereo_visium/ClaBin100_PtrSpa_corrdinates_xylem_1116.xlsx"
+path_annot_info = "references/Ptr/annotation/Ptrichocarpa_533_v4.1.annotation_info.txt"
+path_cell_ident = "outputs/Populus/barcode2color/ptr_tenx_batch1_rs17_curated.csv"
+```
+
+```{r}
+# import data
+sp_data <- Load10X_Spatial(
+    data.dir=path_spaceranger_out,
+    filename = "filtered_feature_bc_matrix.h5",
+    assay = "Spatial"
+)
+# xylem_coordinate <- read_excel(path_xylem_coordinate, sheet = "Ptr")
+```
+
+# Data Preprocessing
+
+```{r}
+plot1 <- VlnPlot(sp_data, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialFeaturePlot(sp_data, features = "nCount_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+ggsave(
+    filename = "outputs/notebook/Spatial/nCounts_tissue_image.png",
+    width=20,
+    height=8
+)
+```
+
+# Normalizing data using SCTransform
+
+```{r}
+sp_data <- SCTransform(sp_data, assay = "Spatial")
+```
+
+#### Plot UMI/Feature Count
+
+```{r}
+SpatialFeaturePlot(sp_data, features = "nFeature_Spatial")
+SpatialFeaturePlot(sp_data, features = "nCount_Spatial")
+```
+
+# PCA-UMAP, clustering --\> plotting
+
+```{r}
+sp_data <- RunPCA(sp_data, assay = "SCT", verbose = FALSE)
+sp_data <- FindNeighbors(sp_data, reduction = "pca", dims = 1:30)
+sp_data <- FindClusters(sp_data, verbose = FALSE)
+sp_data <- RunUMAP(sp_data, reduction = "pca", dims = 1:30)
+p1 <- DimPlot(sp_data, reduction = "umap", label = FALSE)
+p2 <- SpatialDimPlot(sp_data, label = FALSE)
+p12 <- p1 + p2
+ggsave(
+    filename = "outputs/notebook/Spatial/umap_tissue_image.png",
+    width=20,
+    height=8
+)
+p12
+```
+
+# Try different palettes for SpatialDimPlot
+
+```{r}
+dirout_tmp <- file.path("outputs/notebook/Spatial/test4.1")
+dir.create(dirout_tmp)
+color_order <- c("3", "2", "6", "1", "5", "4", "7", "0")
+colors <- list(
+    "white_v2" = c(
+        "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF",
+        "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"
+    )
+    # ,
+    # "3-2" = c(
+    #     "#7F7F7F", "#D9D9D9", "#C7AA74", "#603140",
+    #     "#EEE82C", "#739E82", "#2C5530", "#87B8A2"
+    # )
+) 
+p <- SpatialDimPlot(
+    sp_data, 
+    stroke = .8,
+    crop = FALSE, 
+    pt.size.factor = .7, 
+    label = FALSE
+) + theme(
+    legend.position = "none"
+)
+for (i in 1:length(colors)) {
+    c_tmp <- colors[[i]]
+    names(c_tmp) <- color_order
+    p_tmp <- p + scale_fill_manual(
+        values=c_tmp
+    )
+    print(p_tmp)
+    ggsave(
+        filename = file.path(
+            dirout_tmp,
+            paste0(names(colors)[i], ".png")
+        ),
+        width=10,
+        height=8
+    )
+}
+```
+
+# Show nCounts by clusters
+
+```{r}
+sp_data$seurat_clusters %<>% factor(
+  levels = c("0", "7", "4", "5", "1", "6", )
+)
+plot1 <- VlnPlot(sp_data, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialDimPlot(sp_data, group.by = "seurat_clusters") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+ggsave(
+    filename = "outputs/notebook/Spatial/nCounts_tissue_image_by_cluster.png",
+    width=20,
+    height=8
+)
+```
+
+# (Deprecated) DEG between secondary xylem and primary xylem
+
+```{r}
+deg_df <- FindMarkers(sp_data, ident.1 = 1, ident.2 = 6)
+```
+
+# (Deprecated) Convert DEG names to Arabidopsis Gene ID (For running ShinyGO)
+
+```{r}
+annot_info <- read.delim(path_annot_info, header = TRUE, row.names = NULL)
+best_arabi_gene <- annot_info$best_arabi_gene
+names(best_arabi_gene) <- paste0(annot_info$locusName, ".v4.1")
+deg_df$best_ath <- best_arabi_gene[rownames(deg_df)]
+write.csv(x=deg_df, "outputs/notebook/Spatial/deg_outer_vs_inner.csv")
+```
+
+NOTE: water transportation is up-regulated in primary xylem
+
+# (Deprecated) Correlate single-cell and spatial data
+
+```{r}
+sc_data <- Read10X(data.dir=path_cellranger_out)
+cell_ident <- read.csv(path_cell_ident, header = TRUE, row.names = 1)
+cluster <- cell_ident$Cluster
+cluster[cluster == 1] <- "Vessel"
+cluster[cluster == 2] <- "FuIP"
+cluster[cluster == 3] <- "RO"
+cluster[cluster == 4] <- "RP"
+cluster[cluster == 5] <- "FuEP"
+cluster[cluster == 6] <- "FuO"
+cluster[cluster == 7] <- "Fiber"
+cluster[cluster == 8] <- "Ray"
+cluster[cluster == 9] <- "outlier1"
+cluster[cluster == 10] <- "outlier2"
+cluster[cluster == 11] <- "outlier3"
+names(cluster) <- rownames(cell_ident)
+sc_data <- CreateSeuratObject(counts = sc_data, project = "ptr_tenx_batch1_rs17")
+sc_data$cluster <- cluster
+Idents(sc_data) <- "cluster"
+```
+
+```{r}
+sc_data <- SCTransform(sc_data, verbose = FALSE)
+sc_data <- RunPCA(sc_data, verbose = FALSE)
+sc_data <- RunUMAP(sc_data, reduction = "pca", dims = 1:30)
+plot1 <- VlnPlot(sc_data, features = "nCount_RNA", pt.size = 0.1) + NoLegend()
+plot2 <- DimPlot(sc_data)
+wrap_plots(plot1, plot2)
+```
+
+# (Deprecated) Predict spatial cell type by single-cell annotation
+
+```{r}
+sp_xylem <- subset(sp_data, idents = c(1, 6))
+p <- SpatialDimPlot(sp_xylem, crop = FALSE, label = TRUE, pt.size.factor = 1, label.size = 3)
+p
+```
+
+```{r}
+anchors <- FindTransferAnchors(
+    reference = sc_data,
+    query = sp_xylem,
+    normalization.method = "SCT"
+)
+predictions.assay <- TransferData(
+    anchorset = anchors,
+    refdata = sc_data$cluster,
+    prediction.assay = TRUE,
+    weight.reduction = sp_xylem[["pca"]], 
+    dims = 1:30
+)
+sp_xylem[["predictions"]] <- predictions.assay
+```
+
+```{r}
+DefaultAssay(sp_xylem) <- "predictions"
+p <- SpatialFeaturePlot(
+    sp_xylem,
+    features = c(
+        "RO", "RP", "Ray",
+        "FuO", "FuEP", "FuIP",
+        "Fiber", "Vessel"
+    ),
+    pt.size.factor = 1.6, 
+    ncol = 3, 
+    crop = TRUE
+)
+ggsave(
+    "outputs/notebook/Spatial/sc-celltype_tissue_image_1&2.png",
+    width=14,
+    height=18
+)
+```
+
+# Try splitting secondary xylem to 3 sub clusters
+
+```{r}
+sp_xylem <- subset(sp_data, idents = c(1))
+SpatialDimPlot(sp_xylem)
+```
+
+Exclude xylem cells at pith/phloem region
+
+```{r}
+excluded_bc <- c(
+    "CCGGCGCATATTGGAT-1",
+    "GAGCGAGGGAGTACCG-1",
+    "ATCGACTCTTTCCGTT-1",
+    "GCTCTCGGGTACCGAA-1",
+    "TCCCGCGTACTCCTGG-1",
+    "ATTGCTGCTCCTCCAT-1",
+    "TTGTAATCCGTACTCG-1",
+    "ATGCCGGTTGATGGGA-1"
+)
+sp_xylem <- subset(sp_xylem, cells = excluded_bc, invert = TRUE)
+xylem_cells <- Cells(sp_xylem)
+SpatialDimPlot(sp_xylem)
+```
+
+# Measure the transcriptome variance in each sub-cluster
+
+```{r}
+sp_xylem <- FindClusters(sp_xylem, resolution = 0.5, group.singletons = FALSE)
+SpatialDimPlot(sp_xylem, group.by = "seurat_clusters") + theme(legend.position = "right")
+```
+
+## Record clustering results
+
+```{r}
+sp_xylem_metadata <- sp_xylem@meta.data
+sp_xylem_metadata[sp_xylem_metadata$SCT_snn_res.0.5 == 0, "cluster"] <- "mid"
+sp_xylem_metadata[sp_xylem_metadata$SCT_snn_res.0.5 == 1, "cluster"] <- "early"
+sp_xylem_metadata[sp_xylem_metadata$SCT_snn_res.0.5 == 2, "cluster"] <- "late"
+sp_xylem$cluster <- factor(
+    sp_xylem_metadata$cluster, 
+    levels = c("early", "mid", "late")
+)
+Idents(sp_xylem) <- "cluster"
+```
+
+### Try different color scheme for SpatialDimPlot
+
+```{r}
+dirout_tmp <- file.path("outputs/notebook/Spatial/test4.1")
+dir.create(dirout_tmp)
+
+# plot
+p <- SpatialDimPlot(
+        sp_xylem, crop = FALSE, pt.size.factor = .7
+    ) + theme(legend.position = "none")
+
+# color schemes to try
+color_order <- c("early", "mid", "late")
+colors <- list(
+    "1" = c("#9E0059", "#30638E", "#FF8811"),
+    "2" = c("#9E0059", "#30638E", "#F46036"),
+    "3" = c("#9E0059", "#30638E", "#FF6700"),
+    "4" = c("#9E0059", "#30638E", "#F9DC5C"),
+    "5" = c("#9E0059", "#30638E", "#F9DC5C"),
+    "6" = c("#9E0059", "#30638E", "#FFC857")
+)
+
+# try
+for (i in 1:length(colors)) {
+    c_tmp <- colors[[i]]
+    names(c_tmp) <- color_order
+    p_tmp <- p + scale_fill_manual(
+        values=c_tmp
+    )
+    print(p_tmp)
+    ggsave(
+        filename = file.path(
+            dirout_tmp,
+            paste0(names(colors)[i], "_no_crop.png")
+        ),
+        width=10,
+        height=8
+    )
+}
+```
+
+```{r}
+p1 <- VlnPlot(sp_xylem, features = "nCount_SCT", pt.size = 0.1) + NoLegend()
+p2 <- SpatialDimPlot(sp_xylem) + theme(legend.position = "right")
+p <- wrap_plots(p1, p2)
+ggsave(
+    filename = "outputs/notebook/Spatial/nCount_SCT_tissue_image_by_2nd_subcluster.png",
+    width=20,
+    height=8
+)
+p
+```
+
+```{r}
+p1 <- VlnPlot(sp_xylem, features = "nFeature_SCT", pt.size = 0.1) + NoLegend()
+p2 <- SpatialDimPlot(sp_xylem) + theme(legend.position = "right")
+p <- wrap_plots(p1, p2)
+ggsave(
+    filename = "outputs/notebook/Spatial/nFeature_SCT_tissue_image_by_2nd_subcluster.png",
+    width=20,
+    height=8
+)
+p
+```
+
+```{r}
+sp_xylem <- RunPCA(sp_xylem)
+p1 <- DimPlot(sp_xylem, reduction = "pca", label = FALSE)
+p2 <- SpatialDimPlot(sp_xylem, group.by = "cluster") + theme(legend.position = "right")
+wrap_plots(p1, p2)
+ggsave(
+    filename = "outputs/notebook/Spatial/pca_tissue_image_by_2nd_subcluster.png",
+    width=20,
+    height=8
+)
+```
+
+Calculate the distance between pairs of randomly sampled spot in each
+sub-cluster Distance functions
+
+```{r}
+# Manhattan
+manhattan.distance <- function(x, y) return(sum(abs(x-y)))
+
+# cosine
+cosine.similarity <- function(x, y) return(sum(x*y) / (sqrt(sum(x^2))*sqrt(sum(y^2))))
+cosine.distance <- function(x, y) return(1 - cosine.similarity(x, y))
+
+# euclidean
+euclidean.distance <- function(x, y) return(sqrt(sum((x - y)^2)))
+
+# spearman 
+spearman.cor <- function(x, y) return(cor(x, y, method="spearman"))
+spearman.distance <- function(x, y) return(1 - abs(spearman.cor(x, y)))
+
+# pearson 
+pearson.cor <- function(x, y) return(cor(x, y, method="pearson"))
+pearson.distance <- function(x, y) return(1 - abs(pearson.cor(x, y)))
+
+func <- list(
+    "manhattan" = manhattan.distance,
+    "cosine" = cosine.distance,
+    "euclidean" = euclidean.distance,
+    "spearman" = spearman.distance,
+    "pearson" = pearson.distance
+)
+```
+
+Calculate the pairwise distances between cells
+
+```{r}
+# the function to use
+for (metric in c("euclidean")) {
+    distance.function <- func[[metric]]
+    
+    # calculate
+    input.data <- GetAssayData(sp_xylem, assay = "SCT", layer = "data")
+    cell.distance <- CustomDistance(input.data, my.function = distance.function)
+    cell.distance <- as.matrix(cell.distance)
+    
+    # sampling
+    distances <- data.frame(matrix(nrow = 0, ncol = 4))
+    set.seed(42)
+    for (sub_cluster in c("early", "mid", "late")) {
+        cells <- rownames(sp_xylem@meta.data[sp_xylem@meta.data$cluster == sub_cluster, ])
+        for (i in 1:100) {
+            sampled <- sample(cells, size = 2, replace = FALSE)
+            sampled <- sort(sampled)
+            distance <- cell.distance[sampled[1], sampled[2]]
+            distances <- rbind(distances, list(sub_cluster, sampled[1], sampled[2], distance))
+        }
+    }
+    colnames(distances) <- c("sub_cluster", "cell_1", "cell_2", "distance")
+    
+    p <- ggplot(distances, aes(
+        x = factor(
+            sub_cluster,
+            levels = c("early", "mid", "late")
+        ), 
+        y = distance
+    )) + 
+        geom_violin(
+            aes(colour = sub_cluster)
+        ) + 
+        geom_jitter(aes(colour = sub_cluster), width = 0.2, size = .5) + 
+        # stat_summary(fun = "mean", geom = "point") + 
+        theme_classic() +
+        theme(legend.position = "none") +
+        labs(
+            x = NULL,
+            y = NULL,
+            title = NULL
+            # sprintf(
+            # "%s distance between 100 pairs of randomly sampled spots\nfrom each sub-cluster",
+            # metric)
+        ) +
+        scale_color_manual(values = c(
+            "early" = "#9F005A", 
+            "mid" = "#30638E", 
+            "late" = "#FF8811"))
+    
+    # save plot
+    svg(
+        filename = sprintf(
+            "outputs/notebook/Spatial/intra-cluster_%s-distance_by_sub-cluster_normalized.svg",
+            metric
+        ), 
+        width = 3,
+        height = 3
+    )
+    print(p)
+    dev.off()
+    
+    # ggsave(
+    #     filename = sprintf(
+    #         "outputs/notebook/Spatial/intra-cluster_%s-distance_by_sub-cluster_normalized.svg",
+    #         metric
+    #     ),
+    #     width = 8,
+    #     height = 8
+    # )
+}
+# print(p)
+# dev.off()
+```
+
+```{r}
+res <- wilcox.test(
+    subset(distances, distances$sub_cluster == "early")$distance,
+    subset(distances, distances$sub_cluster == "mid")$distance,
+    paired = FALSE,
+    alternative = "greater"
+)
+res
+```
+
+```{r}
+res <- wilcox.test(
+    subset(distances, distances$sub_cluster == "late")$distance,
+    subset(distances, distances$sub_cluster == "mid")$distance,
+    paired = FALSE,
+    alternative = "greater"
+)
+res
+```
+
+```{r}
+wilcox.test(distance ~ sub_cluster, data = distances, subset = distances$sub_cluster %in% c("early", "late"))
+```
+
+# Integrate single-cell & spatial data (deconvolution)
+
+```{r}
+# remove outlier cells
+sc_data <- subset(sc_data, idents = c("outlier1", "outlier2", "outlier3"), invert = TRUE)
+counts <- sc_data[["RNA"]]$counts
+cluster <- as.factor(sc_data$cluster)
+nUMI <- sc_data$nCount_RNA
+levels(cluster) <- gsub("/", "-", levels(cluster))
+cluster <- droplevels(cluster)
+
+# create the RCTD reference object
+reference <- Reference(counts, cluster, nUMI)
+
+counts_hd <- sp_xylem[["Spatial"]]$counts
+xylem_cells_hd <- colnames(sp_xylem[["Spatial"]])
+coords <- GetTissueCoordinates(sp_xylem)[xylem_cells_hd, 1:2]
+
+# create the RCTD query object
+query <- SpatialRNA(coords, counts_hd, colSums(counts_hd))
+```
+
+```{r}
+# run RCTD
+RCTD <- create.RCTD(query, reference, max_cores = 28)
+RCTD <- run.RCTD(RCTD, doublet_mode = "doublet")
+# add results back to Seurat object
+sp_xylem <- AddMetaData(sp_xylem, metadata = RCTD@results$results_df)
+```
+
+```{r}
+sp_xylem$celltypes <- paste(
+    RCTD@results$results_df$first_type,
+    RCTD@results$results_df$second_type,
+    sep = "-"
+)
+p <- SpatialDimPlot(sp_xylem, group.by = "first_type")
+ggsave(
+    filename = "outputs/notebook/Spatial/RCTD_first_type.png",
+    width = 8,
+    height = 8
+)
+p
+```
+
+# Integrate single-cell & spatial data as if integrating single-cell & single-cell data (not sure if valid)
+
+Visium xylem spots
+
+```{r}
+sp_data <- Load10X_Spatial(
+    data.dir=path_spaceranger_out,
+    filename = "filtered_feature_bc_matrix.h5",
+    assay = "RNA"
+)
+sp_xylem <- subset(sp_data, cells = xylem_cells)
+sp_xylem[["cluster"]] <- sp_xylem_metadata$cluster
+sp_xylem
+```
+
+Xylem single-cell
+
+```{r}
+sc_data <- Read10X(data.dir=path_cellranger_out)
+cell_ident <- read.csv(path_cell_ident, header = TRUE, row.names = 1)
+cluster <- cell_ident$Cluster
+cluster[cluster == 1] <- "Vessel"
+cluster[cluster == 2] <- "FuIP"
+cluster[cluster == 3] <- "RO"
+cluster[cluster == 4] <- "RP"
+cluster[cluster == 5] <- "FuEP"
+cluster[cluster == 6] <- "FuO"
+cluster[cluster == 7] <- "Fiber"
+cluster[cluster == 8] <- "Ray"
+cluster[cluster == 9] <- "outlier1"
+cluster[cluster == 10] <- "outlier2"
+cluster[cluster == 11] <- "outlier3"
+names(cluster) <- rownames(cell_ident)
+sc_data <- CreateSeuratObject(counts = sc_data, project = "ptr_tenx_batch1_rs17")
+sc_data$cluster <- cluster
+Idents(sc_data) <- "cluster"
+sc_data <- subset(
+    sc_data,
+    idents = c("outlier1", "outlier2", "outlier3"),
+    invert = TRUE
+)
+sc_data
+```
+
+Merge data objects
+
+```{r}
+merged <- merge(sc_data, sp_xylem)
+Idents(merged) <- "cluster"
+merged
+```
+
+```{r}
+colors <- c("#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#F8766D", "#00BA38", "#619CFF")
+p1 <- VlnPlot(merged, features = "nCount_RNA", pt.size = 0.1, cols = colors) + NoLegend()
+p2 <- VlnPlot(merged, features = "nFeature_RNA", pt.size = 0.1, cols = colors) + NoLegend()
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = "outputs/notebook/Spatial/nCounts_nFeature_sc_and_sp_xylem.png",
+    width=10,
+    height=4
+)
+```
+
+Run standard analysis workflow
+
+Preprocess
+
+```{r}
+merged <- SCTransform(merged)
+```
+
+```{r}
+colors <- c("#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#F8766D", "#00BA38", "#619CFF")
+p1 <- VlnPlot(merged, features = "nCount_SCT", pt.size = 0.1, cols = colors) + NoLegend()
+p2 <- VlnPlot(merged, features = "nFeature_SCT", pt.size = 0.1, cols = colors) + NoLegend()
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = "outputs/notebook/Spatial/nCounts_nFeature_SCT_sc_and_sp_xylem.png",
+    width=10,
+    height=4
+)
+```
+
+UMAP before integration
+
+```{r}
+merged <- RunPCA(merged)
+merged <- RunUMAP(merged, dims = 1:30)
+p1 <- DimPlot(merged, reduction = "umap", group.by = "orig.ident") +
+    theme(legend.position = "bottom")
+colors <- c("#FFFFFF", "#FF0000", "#61C9A8", "#7A4A33", "#6362A7", "#FFFFFF", "#FFFFFF", "#FF8F8F", "#E28413", "#F3EC5B", "#1F77B4", "#FF0000")
+p2 <- DimPlot(merged, reduction = "umap", group.by = "cluster", cols = colors) +
+    theme(legend.position = "none")
+colors <- c("#00BA38", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#619CFF", "#F8766D", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF")
+p3 <- DimPlot(merged, reduction = "umap", group.by = "cluster", cols = colors) +
+    theme(legend.position = "right")
+p <- wrap_plots(p1, p2, p3)
+p
+ggsave(
+    filename = "outputs/notebook/Spatial/Before_CCAIntegrate_SCT_sc_and_sp_xylem.png",
+    width = 12,
+    height = 4
+)
+```
+
+Integrate
+
+```{r}
+merged <- IntegrateLayers(
+    merged,
+    method = CCAIntegration,
+    normalization.method = "SCT",
+    orig.reduction = "pca",
+    new.reduction = "integrated.cca"
+)
+```
+
+```{r}
+merged[["RNA"]] <- JoinLayers(merged[["RNA"]])
+merged[["RNA"]]
+```
+
+```{r}
+merged <- RunUMAP(merged, dims = 1:30, reduction = "integrated.cca")
+```
+
+```{r}
+p1 <- DimPlot(merged, reduction = "umap", group.by = "orig.ident") +
+    theme(legend.position = "bottom")
+colors <- c("#FFFFFF", "#FF0000", "#61C9A8", "#7A4A33", "#6362A7", "#FFFFFF", "#FFFFFF", "#FF8F8F", "#E28413", "#F3EC5B", "#1F77B4")
+p2 <- DimPlot(merged, reduction = "umap", group.by = "cluster", cols = colors) +
+    theme(legend.position = "none")
+colors <- c("#00BA38", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#619CFF", "#F8766D", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF")
+p3 <- DimPlot(merged, reduction = "umap", group.by = "cluster", cols = colors) +
+    theme(legend.position = "right")
+p <- wrap_plots(p1, p2, p3)
+p
+ggsave(
+    filename = "outputs/notebook/Spatial/CCAIntegrate_SCT_sc_and_sp_xylem.png",
+    width = 12,
+    height = 4
+)
+```
+
+Find the nearest single-cell data point to each spatial data point
+
+```{r}
+dist_on_integrated_reduc <- dist(Embeddings(merged, reduction = "integrated.cca"))
+dist_on_integrated_reduc <- as.matrix(dist_on_integrated_reduc)
+dist_on_integrated_reduc <- dist_on_integrated_reduc[Cells(sp_xylem), Cells(sc_data)]
+nearest_sc_cell_to_sp_xylem <- apply(dist_on_integrated_reduc, 1, function(x)(names(which.min(x))))
+sc_annotated_sp_xylem <- paste("sp", merged@meta.data[nearest_sc_cell_to_sp_xylem, "cluster"], sep = "-")
+merged@meta.data[Cells(sp_xylem), "cluster"] <- sc_annotated_sp_xylem
+```
+
+```{r}
+sp_xylem[["cluster"]] <- sc_annotated_sp_xylem
+colors <- c(
+    "sp-Fiber" = "#FF0000",
+    "sp-FuEP" = "#61C9A8", 
+    "sp-FuIP" = "#7A4A33", 
+    "sp-FuO" = "#6362A7", 
+    "sp-Ray" = "#FF8F8F", 
+    "sp-RO" = "#E28413", 
+    "sp-RP" = "#F3EC5B", 
+    "sp-Vessel" = "#1F77B4"
+)
+SpatialDimPlot(sp_xylem, group.by = "cluster") + scale_fill_manual(values = colors)
+ggsave(
+    filename = "outputs/notebook/Spatial/CCAIntegrate_SCT_sc_annotated_sp_xylem.png",
+    width = 12,
+    height = 4
+)
+```
+
+```{r}
+sp_xylem[["cluster"]] <- sc_annotated_sp_xylem
+sp_xylem[["sub_cluster"]] <- sp_xylem_metadata$SCT_snn_res.0.5
+sp_xylem$cluster[sp_xylem$sub_cluster == 1] = "early"
+sp_xylem$cluster[sp_xylem$sub_cluster == 2] = "late"
+colors <- c(
+    "sp-Fiber" = "#FF0000",
+    "sp-FuEP" = "#61C9A8", 
+    "sp-FuIP" = "#7A4A33", 
+    "sp-FuO" = "#6362A7", 
+    "sp-Ray" = "#FF8F8F", 
+    "sp-RO" = "#E28413", 
+    "sp-RP" = "#F3EC5B", 
+    "sp-Vessel" = "#1F77B4",
+    "early" = "#00BA38",
+    "late" = "#619CFF"
+)
+SpatialDimPlot(sp_xylem, group.by = "cluster") + scale_fill_manual(values = colors)
+ggsave(
+    filename = "outputs/notebook/Spatial/CCAIntegrate_SCT_sc_annotated_sp_mid_xylem.png",
+    width = 12,
+    height = 4
+)
+```
+
+# Give biological meanings to spatial data
+
+Spatial data and single-cell data are poorly integrated. We doubt
+whether data from these to technologies can be integrated. Instead of
+trying to integrate the two datasets, we now focus on spatial
+transcriptome data itself. We will inspect the expression level of wood
+formation related genes across the cross-section and see whether it
+captures process of wood formation.
+
+Continued from ![Record clustering
+results](##%20Record%20clustering%20results)
+
+```{r}
+sp_xylem
+VariableFeaturePlot(sp_xylem)
+```
+
+Populus GeneID --\> KO
+
+```{r}
+annot_info <- read.table(
+    "references/Ptr/annotation/Ptrichocarpa_533_v4.1.annotation_info.txt",
+    sep = "\t",
+    header = TRUE,
+    comment.char = ""
+)
+annot_info
+```
+
+## Monolignol biosynthesis genes (according to <https://www.genome.jp/kegg/tables>)
+
+(K10775,K13064) K00487 K01904 K13065 K09754 K00588 K09753 K09755 K13066
+(K00083,K22395)
+
+```{r}
+ko_list <- c(
+    "K10775", "K13064", "K00487", "K01904", "K13065", 
+    "K09754", "K00588", "K09753", "K09755", "K13066", 
+    "K00083", "K22395"
+)
+gene_list <- unlist(sapply(
+    ko_list, function(x) {
+        subset(annot_info, grepl(x, annot_info$KO))$locusName
+    }
+))
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+length(gene_list_pruned)
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+# plot
+length(gene_list_pruned)
+p <- SpatialFeaturePlot(sp_xylem, slot = "counts", features = gene_list_pruned, ncol = 5)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_M00039_counts.png",
+    width = 20,
+    height = 12
+)
+```
+
+Two genes: Potri.001G304800 & Potri.009G099800 show similar patter of
+higher -\> low from early -\> late. Best hit in Arabidopsis: AT4G34050
+We check the expression level in AspWood data. The genes in P. tremula
+are: Potra2n9c19246, Potra2n1c2649
+
+```{r}
+gid <- "Potri.009G099800.v4.1"
+p1 <- VlnPlot(sp_xylem, features = c(gid), group.by = "cluster") + 
+    scale_fill_manual(values = c("early" = "#00BA38", "mid" = "#F8766D", "late" = "#619CFF")) +
+    scale_x_discrete(limits = c("early", "mid", "late"))
+p2 <- SpatialFeaturePlot(sp_xylem, features = c(gid))
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = sprintf("outputs/notebook/Spatial/Violin_FeaturePlot_%s.png", gid),
+    width = 6,
+    height = 4
+)
+```
+
+```{r}
+gid <- "Potri.001G240900.v4.1"
+p1 <- VlnPlot(sp_data, features = c(gid), group.by = "seurat_clusters")
+p2 <- SpatialFeaturePlot(sp_data, features = c(gid))
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = sprintf("outputs/notebook/Spatial/Violin_FeaturePlot_%s.png", gid),
+    width = 6,
+    height = 4
+)
+```
+
+## Peroxidase Potri.005G240500.v4.1 (AT4G21960)
+
+```{r}
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = c("Potri.005G240500.v4.1"), ncol = 1)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_Peroxidase.png",
+    width = 20,
+    height = 8
+)
+```
+
+## Cellulose biosynthetic process <GO:0030244>
+
+```{r}
+gene_list <- unlist(subset(annot_info, grepl("GO:0030244", annot_info$GO))$locusName)
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+length(gene_list_pruned)
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = gene_list_pruned, ncol = 3)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_GO:0030244.png",
+    width = 20,
+    height = 8
+)
+```
+
+## hemicellulose catabolic process <GO:2000895>
+
+```{r}
+gene_list <- c(
+    "Potri.006G027700", "Potri.002G113132", "Potri.005G168400",
+    "Potri.003G022900", "Potri.004G173300", "Potri.002G113066",
+    "Potri.002G197200", "Potri.002G094000", "Potri.002G093900",
+    "Potri.001G206800", "Potri.001G089100", "Potri.001G294700",
+    "Potri.009G087700", "Potri.014G122200", "Potri.009G132600",
+    "Potri.009G088800", "Potri.009G087800", "Potri.009G087600",
+    "Potri.007G114300", "Potri.008G108100", "Potri.005G168500",
+    "Potri.010G141400", "Potri.016G025500"
+)
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+cat(length(gene_list_pruned))
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = gene_list_pruned, ncol = 6)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_GO:2000895.png",
+    width = 20,
+    height = 8
+)
+```
+
+## Meristem initiation GO: 0010014
+
+gene list queried from AmiGO 2
+
+```{r}
+gene_list <- c(
+    "Potri.001G264100", "Potri.010G102600", "Potri.009G059000",
+    "Potri.014G164800", "Potri.008G138100", "Potri.002G221500",
+    "Potri.011G045600", "Potri.012G020200", "Potri.015G008300",
+    "Potri.001G473200"
+)
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+cat(length(gene_list_pruned))
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = gene_list_pruned, ncol = 4)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_GO:0010014.png",
+    width = 20,
+    height = 8
+)
+```
+
+## Cellulose Synthase from <https://academic.oup.com/plcell/article/29/7/1585/6099151#234708778>
+
+PtCesA4 (Potri.002G257900), PtCesA7-A (Potri.006G181900), PtCesA7-B
+(Potri.018G103900), PtCesA8-A (Potri.011G069600), and PtCesA8-B
+(Potri.004G059600).
+
+```{r}
+gene_list <- c(
+    "Potri.002G257900", "Potri.006G181900", "Potri.018G103900",
+    "Potri.011G069600", "Potri.004G059600"
+)
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+length(gene_list_pruned)
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = gene_list_pruned, ncol = 5)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_CesA.png",
+    width = 20,
+    height = 8
+)
+```
+
+## Cell expansion hallmark genes from <https://academic.oup.com/plcell/article/29/7/1585/6099151#234708778>
+
+Central gene: Potri.011G057500/AT2G33850 Hallmark gene:
+Potri.001G240900/PtrEXPA1 Potri.002G238800/AT5G48900 Pectin lyase-like
+superfamily protein\
+Potri.003G175900/AT1G04680 Pectin lyase-like superfamily protein
+
+```{r}
+gene_list <- c(
+    "Potri.011G057500", "Potri.001G240900", "Potri.002G238800",
+    "Potri.003G175900"
+)
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+length(gene_list_pruned)
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = gene_list_pruned, ncol = 3)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_cell_expansion.png",
+    width = 20,
+    height = 8
+)
+```
+
+```{r}
+gid <- "Potri.003G175900.v4.1"
+p1 <- VlnPlot(sp_xylem, features = c(gid), group.by = "cluster") + 
+    scale_fill_manual(values = c("early" = "#00BA38", "mid" = "#F8766D", "late" = "#619CFF")) +
+    scale_x_discrete(limits = c("early", "mid", "late"))
+p2 <- SpatialFeaturePlot(sp_xylem, features = c(gid))
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = sprintf("outputs/notebook/Spatial/Violin_FeaturePlot_%s.png", gid),
+    width = 8,
+    height = 4
+)
+```
+
+## Cell expansion related PFAM
+
+PF00544
+
+```{r}
+gene_list <- subset(annot_info, grepl("PF00544", annot_info$Pfam))$locusName
+# gene_list <- append(gene_list, subset(annot_info, grepl("GO:0006793", annot_info$GO))$locusName)
+# gene_list <- append(gene_list, subset(annot_info, grepl("GO:0016310", annot_info$GO))$locusName)
+# gene_list <- append(gene_list, subset(annot_info, grepl("GO:0006796", annot_info$GO))$locusName)
+gene_list <- paste(gene_list, ".v4.1", sep = "")
+gene_list_pruned <- gene_list[gene_list %in% Features(sp_xylem)]
+gene_list_pruned <- unique(gene_list_pruned)
+dir.create("outputs/notebook/Spatial/FeaturePlots/")
+length(gene_list_pruned)
+p <- SpatialFeaturePlot(sp_xylem, slot = "data", features = gene_list_pruned, ncol = 4)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_cell_expansion_PF00544.png",
+    width = 20,
+    height = 12
+)
+```
+
+## Plot expression level of DEGs
+
+### Mid vs. Early
+
+```{r}
+DEA_mid_vs_early <- FindMarkers(sp_xylem, ident.1 = "mid", ident.2 = "early", test.use = "wilcox")
+cat("Found N DEG:", sum(DEA_mid_vs_early$p_val_adj < 0.05))
+p <- SpatialFeaturePlot(
+    sp_xylem, 
+    slot = "data", 
+    features = rownames(DEA_mid_vs_early[DEA_mid_vs_early$p_val_adj < 0.05, ][1:15, ]), 
+    ncol = 5
+)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_DEA_mid_vs_early_top15.png",
+    width = 20,
+    height = 12
+)
+```
+
+Export DEA data.frame
+
+```{r}
+DEA_table <- DEA_mid_vs_early
+DEA_table$best_arabi_gene <- ""
+for (i in 1:nrow(DEA_table)) {
+    ptr_gene <- substr(rownames(DEA_table[i, ]), 1, 16)
+    ath_gene <- subset(annot_info, annot_info$locusName == ptr_gene)$best_arabi_gene[1]
+    if (length(ath_gene) != 0) {
+        DEA_table[i, "best_arabi_gene"] <- ath_gene
+    }
+}
+write.csv(
+    DEA_table,
+    "outputs/notebook/Spatial/DEA_mid_vs_early.csv"
+)
+cat(subset(DEA_table, (DEA_table$p_val_adj < 0.05) & (DEA_table$avg_log2FC > 0))$best_arabi_gene, sep = "\n")
+```
+
+Three mid vs early, up-regulated genes: Potri.002G223100.v4.1,
+Potri.009G030800.v4.1, Potri.013G066600.v4.1
+
+```{r}
+gid <- "Potri.009G030800.v4.1"
+p1 <- VlnPlot(sp_xylem, features = c(gid), group.by = "cluster") + 
+    scale_fill_manual(values = c("early" = "#00BA38", "mid" = "#F8766D", "late" = "#619CFF")) +
+    scale_x_discrete(limits = c("early", "mid", "late"))
+p2 <- SpatialFeaturePlot(sp_xylem, features = c(gid))
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = sprintf("outputs/notebook/Spatial/Violin_FeaturePlot_%s.png", gid),
+    width = 12,
+    height = 4
+)
+```
+
+### Mid vs. Late
+
+```{r}
+DEA_mid_vs_late <- FindMarkers(sp_xylem, ident.1 = "mid", ident.2 = "late", test.use = "wilcox")
+cat("Found N DEG:", sum(DEA_mid_vs_late$p_val_adj < 0.05))
+p <- SpatialFeaturePlot(
+    sp_xylem, 
+    slot = "data", 
+    features = rownames(DEA_mid_vs_late[DEA_mid_vs_late$p_val_adj < 0.05, ][1:15, ]), 
+    ncol = 5
+)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_DEA_mid_vs_late_top15.png",
+    width = 20,
+    height = 12
+)
+# export DEA data.frame
+DEA_table <- DEA_mid_vs_late
+DEA_table$best_arabi_gene <- ""
+for (i in 1:nrow(DEA_table)) {
+    ptr_gene <- substr(rownames(DEA_table[i, ]), 1, 16)
+    ath_gene <- subset(annot_info, annot_info$locusName == ptr_gene)$best_arabi_gene[1]
+    if (length(ath_gene) != 0) {
+        DEA_table[i, "best_arabi_gene"] <- ath_gene
+    }
+}
+write.csv(
+    DEA_table,
+    "outputs/notebook/Spatial/DEA_mid_vs_late.csv"
+)
+cat(subset(DEA_table, (DEA_table$p_val_adj < 0.05) & (DEA_table$avg_log2FC < 0))$best_arabi_gene, sep = "\n")
+```
+
+### Mid vs. Early & Late
+
+```{r}
+DEA_all <- FindAllMarkers(sp_xylem,  test.use = "wilcox")
+cat(
+    "Found N DEG:", sum((DEA_all$cluster == "mid") & (DEA_all$p_val_adj < 0.05))
+)
+p <- SpatialFeaturePlot(
+    sp_xylem, 
+    slot = "data", 
+    features = rownames(DEA_all[(DEA_all$cluster == "mid") & (DEA_all$p_val_adj < 0.05),]), 
+    ncol = 5
+)
+ggsave(
+    "outputs/notebook/Spatial/FeaturePlot_DEA_mid_vs_all_top10.png",
+    width = 20,
+    height = 8
+)
+
+# export DEA data.frame
+DEA_table <- DEA_all
+DEA_table$best_arabi_gene <- ""
+for (i in 1:nrow(DEA_table)) {
+    ptr_gene <- substr(rownames(DEA_table[i, ]), 1, 16)
+    ath_gene <- subset(annot_info, annot_info$locusName == ptr_gene)$best_arabi_gene[1]
+    if (length(ath_gene) != 0) {
+        DEA_table[i, "best_arabi_gene"] <- ath_gene
+    }
+}
+write.csv(
+    DEA_table,
+    "outputs/notebook/Spatial/DEA_mid_vs_all.csv"
+)
+subset(DEA_table, (DEA_table$p_val_adj < 0.05) & (DEA_table$cluster == "mid") & (DEA_table$avg_log2FC > 0))
+```
+
+The one up-regulated genes when comparing mid to (early & late)
+
+```{r}
+gid <- "Potri.012G140800.v4.1"
+p1 <- VlnPlot(sp_xylem, features = c(gid), group.by = "cluster") + 
+    scale_fill_manual(values = c("early" = "#00BA38", "mid" = "#F8766D", "late" = "#619CFF")) +
+    scale_x_discrete(limits = c("early", "mid", "late"))
+p2 <- SpatialFeaturePlot(sp_xylem, features = c(gid))
+p <- wrap_plots(p1, p2)
+p
+ggsave(
+    filename = sprintf("outputs/notebook/Spatial/Violin_FeaturePlot_%s.png", gid),
+    width = 8,
+    height = 4
+)
+```
+
+# Interactive view of UMAP and tissue image
+
+```{r}
+SpatialDimPlot(sp_xylem, interactive = TRUE)
+```

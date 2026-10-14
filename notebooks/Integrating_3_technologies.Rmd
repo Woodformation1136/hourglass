@@ -420,7 +420,7 @@ cluster[cluster == 11] <- "sc-outlier3"
 names(cluster) <- rownames(cell_ident)
 sc_data <- CreateSeuratObject(counts = sc_data, project = "ptr_tenx_batch1_rs17")
 sc_data$cluster <- factor(cluster, levels = c(
-    "sc-FuO", "sc-FuEP", "sc-FuIP", "sc-Vessel", "sc-Fiber",
+    "sc-FuO", "sc-FuEP", "sc-FuIP", "sc-Vessel", "sc-Fiber", 
     "sc-RO", "sc-RP", "sc-Ray", "sc-outlier1", "sc-outlier2", "sc-outlier3"
 ))
 Idents(sc_data) <- "cluster"
@@ -661,10 +661,28 @@ pca_result <- irlba::prcomp_irlba(
 )
 pca_projection <- pca_result$x
 plot_data <- data.frame(pca_projection[, c("PC1", "PC2")])
-plot_data$sample <- colnames(combined_normalized_expression) %>% substring(1, 2)
-ggplot(plot_data, aes(x = PC1, y = PC2, color = factor(sample))) +
+plot_data$sample <- sapply(
+    colnames(combined_normalized_expression),
+    function(x) {strsplit(x, "-")[[1]][2]}
+)
+plot_data$source <- sapply(
+    colnames(combined_normalized_expression),
+    function(x) {substring(x, 1, 1)}
+)
+
+ggplot(
+    plot_data, 
+    aes(
+        x = PC1, 
+        y = PC2, 
+        color = factor(sample),
+        shape = factor(source)
+    )
+) +
     geom_point() +
-    theme_classic()
+    theme_classic() +
+    theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10, "pt"))
+
 ```
 
 ### Heatmap + clustering
@@ -724,27 +742,44 @@ callback_dendsort <- function(hc, ...){
 }
 
 # create heatmap
-set.seed(42)
-ph <- pheatmap(
-    combined_normalized_expression_tmp[top_var_genes, ],
-    kmeans_k = 30,
-    color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
-    annotation_col = annotation_col,
-    annotation_colors = annotation_colors,
-    clustering_distance_rows = "correlation",
-    clustering_distance_cols = "correlation",
-    clustering_method = "complete",
-    cutree_rows = 10,
-    cutree_cols = 11,
-    clustering_callback = callback_dendsort,
-    scale = "column",
-    fontsize_col = 14,
-    fontsize_row = 14,
-    border_color = "gray60",
-    filename = ph_polt,
-    width = 28,
-    height = 14
-)
+colors <- list(
+    color2.1 = c("#4E96A1", "#AD5F58"),
+    color8.1 = c("#2E58A4", "#B69D71"),
+    color10.1 = c("#843E3E", "#D9B97E"),
+    color11.1 = c("#EDD087", "#7B8983"),
+    color12.1 = c("#B49C6E", "#096A5F"),
+    color13 = c("#326068", "#864742"),
+    color14 = c("#24447E", "#A58855"),
+    color15 = c("#5B2B2B", "#BE8E38"),
+    color16 = c("#D9A421", "#5B7058"),
+    color17 = c("#9B824F", "#074D45")
+) # "navy" "firebrick3"
+for (i in 1:length(colors)) {
+    c1 = colors[[i]][1]
+    c2 = colors[[i]][2]
+    name = names(colors)[i]
+    set.seed(42)
+    ph <- pheatmap(
+        combined_normalized_expression_tmp[top_var_genes, ],
+        kmeans_k = 30,
+        color = colorRampPalette(c(c1, "white", c2))(100),
+        # annotation_col = annotation_col,
+        # annotation_colors = annotation_colors,
+        clustering_distance_rows = "correlation",
+        clustering_distance_cols = "correlation",
+        clustering_method = "complete",
+        cutree_rows = 10,
+        cutree_cols = 11,
+        clustering_callback = callback_dendsort,
+        scale = "column",
+        fontsize_col = 14,
+        fontsize_row = 14,
+        border_color = "white",
+        filename = file.path(path_output, sprintf("heatmap_%s.pdf", name)),
+        width = 28,
+        height = 14
+    )   
+}
 ```
 
 Plot average expression of gene clusters
@@ -1103,42 +1138,72 @@ plot_three_datasets <- function(
         sp_object, 
         aspwood_mtx, 
         gid,
-        filename,
+        dirname,
         width,
-        height
+        height,
+        theme_color="black"
     ) {
     features <- paste0(gid, ".v4.1")
     if (features %in% Features(sc_object)) {
-        sc_vln <- VlnPlot(sc_object, features = features) + theme(
+        sc_vln <- VlnPlot(sc_object, features = features,
+            cols = c(
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5",
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5"
+            ),
+            pt.size = 0
+        ) + geom_jitter(
+            size = 0.1, 
+            color = theme_color
+        ) + theme(
             plot.title = element_blank(),
             axis.title.x = element_blank(),
             axis.title.y = element_blank(),
             axis.text.x = element_text(angle = 40, hjust = 1, vjust = 1, size = 10),
+            rect = element_rect(fill = NA, colour = NA),
             legend.position = "none"
         )
-        sc_fea <- FeaturePlot(sc_object, features = features) + theme(
+        sc_vln[[1]]$layers[[1]]$aes_params$colour <- "#595959"
+        sc_fea <- FeaturePlot(sc_object, features = features,
+            cols = c("#F5F5F5", theme_color)
+        ) + theme(
             plot.title = element_blank(),
             axis.title.x = element_blank(),
             axis.title.y = element_blank(),
-            legend.position = "none"
-        )
+            legend.position = "top"
+        ) + NoAxes()
     } else {
         sc_vln <- ggplot()
         sc_fea <- ggplot()
     }
     if (features %in% Features(sp_object)) {
-        sp_vln <- VlnPlot(sp_object, features = features) + theme(
+        sp_vln <- VlnPlot(sp_object, features = features,
+            cols = c(
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5",
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5"
+            ),
+            pt.size = 0
+        ) + geom_jitter(
+            size = 0.1, 
+            color = theme_color
+        ) + theme(
                 plot.title = element_blank(),
                 axis.title.x = element_blank(),
                 axis.title.y = element_blank(),
                 axis.text.x = element_text(angle = 40, hjust = 1, vjust = 1, size = 10),
-            legend.position = "none"
+                panel.background = element_rect(fill = NA, colour = NA),
+                plot.background = element_rect(fill = NA, colour = NA),
+                legend.position = "none"
         ) 
-        sp_fea <- SpatialFeaturePlot(sp_object, features = features) + theme(
-            plot.title = element_blank(),
-            axis.title.x = element_blank(),
-            legend.position = "bottom"
-        )
+        sp_fea <- SpatialFeaturePlot(sp_object, features = features) +
+            scale_fill_gradient(
+                low = "#F5F5F5",
+                high = theme_color
+            ) +
+            theme(
+                plot.title = element_blank(),
+                axis.title.x = element_blank(),
+                legend.position = "bottom"
+            )
     } else {
         sp_vln <- ggplot()
         sp_fea <- ggplot()
@@ -1169,18 +1234,20 @@ plot_three_datasets <- function(
                     y = expression
                 )
             ) +
-            geom_point() +
+            geom_point(
+                color = theme_color
+            ) +
             geom_point(
                 data = aspwood_plot_mean, 
                 aes(y = mean_value), 
-                color = "red", 
-                size = 3
+                color = theme_color, 
+                size = 4.5
             ) +
             geom_line(
                 data = aspwood_plot_mean,
                 aes(y = mean_value, group = 1), 
-                color = "red",
-                linewidth = 0.8
+                color = theme_color,
+                linewidth = 0.8 * 2
             ) +
             geom_vline(
                 xintercept = c(5.5, 12.5, 19.5),
@@ -1191,7 +1258,11 @@ plot_three_datasets <- function(
             theme(
                 axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 12),
                 axis.title.x = element_blank(),
-                axis.title.y = element_blank()
+                axis.title.y = element_blank(),
+                axis.line.x = element_line(colour = "black", linewidth = 0.5),
+                axis.line.y = element_line(colour = "black", linewidth = 0.5),
+                panel.background = element_rect(fill = NA, colour = NA),
+                plot.background = element_rect(fill = NA, colour = NA)
             ) + labs(
                 caption = paste0(
                     "Defline: ", defline[gid, "defline"][[1]], "\n",
@@ -1205,13 +1276,32 @@ plot_three_datasets <- function(
     }
         
     # combine and save plot
-    p <- ((sc_fea | sc_vln) / (sp_fea | sp_vln)) | asp_ln
-    pdf(file = filename, width = width, height = height)
-    print(p)
-    dev.off()
+    # p <- ((sc_fea | sc_vln) / (sp_fea | sp_vln)) | asp_ln
+    
+    # save to separate files
+    p_list <- list(
+        A=sc_fea,
+        B=sp_fea,
+        C=sc_vln,
+        D=sp_vln,
+        E=asp_ln
+    )
+    dir.create(dirname, showWarnings = FALSE)
+    for (i in 1:length(p_list)) {
+        p <- p_list[[i]]
+        p_name <- names(p_list)[i]
+        svg(
+            file.path(dirname, sprintf("%s.svg", p_name)),
+            width = ifelse(p_name == "E", width / 2, width / 4),
+            height = ifelse(p_name == "E", height, height / 2),
+            bg = "transparent"
+        )
+        print(p)
+        dev.off()
+    }
     
     # return plot
-    return(p)
+    return(p_list)
 }
 ```
 
@@ -1219,19 +1309,50 @@ Plot
 
 ```{r}
 gene_pout <- paste0(path_output, "/gene_expression/")
-# dir.create(gene_pout, showWarnings = FALSE)
+dir.create(gene_pout, showWarnings = FALSE)
+theme_color <- "#496F5D"
+replot_genes <- c(
+    "PILS7" = "Potri.005G099300",
+    "GASA4" = "Potri.017G083000",
+    "XTH9_(1)" = "Potri.019G125000",
+    "XTH9_(2)" = "Potri.013G152400",
+    "XTH19" = "Potri.013G005700",
+    "PtrEXPA1" = "Potri.001G240900",
+    "Aquaporin_TIP1_1" = "Potri.006G121700",
+    "ESK1" = "Potri.008G069900",
+    "FLA11" = "Potri.016G088700",
+    "FLA12_(1)" = "Potri.012G127900",
+    "FLA12_(2)" = "Potri.015G129400",
+    "CESA4" = "Potri.002G257900"
+)
+for (i in 1:length(replot_genes)) {
+    g <- replot_genes[[i]]
+    g_name = names(replot_genes)[i]
+    p <- plot_three_datasets(
+        sc_data,
+        sp_data_outlier_rm,
+        aspwood_log2_tpm_mtx_rbest,
+        g,
+        sprintf("%s/replot_%s_%s", gene_pout, g_name, g),
+        width = 14,
+        height = 8,
+        theme_color = theme_color
+    )
+}
 # for (c in names(curated_list)) {
 #     for (g in curated_list[[c]]) {
 #         p <- plot_three_datasets(
 #             sc_data,
-#             sp_data_outlier_rm, 
-#             aspwood_log2_tpm_mtx_rbest, 
+#             sp_data_outlier_rm,
+#             aspwood_log2_tpm_mtx_rbest,
 #             g,
-#             sprintf("%s/Cluster%s_%s.pdf", gene_pout, c, g),
+#             sprintf("%s/Cluster%s_%s", gene_pout, c, g),
 #             width = 14,
-#             height = 8
+#             height = 8,
+#             theme_color = theme_color
 #         )
 #     }
+#     break
 # }
 ```
 

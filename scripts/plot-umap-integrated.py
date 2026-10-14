@@ -31,6 +31,7 @@ merged_data["Sample"] = [x.split(":")[0] for x in merged_data["Barcode"]]
 merged_data["Cluster"] = merged_data["Cluster"].astype(str)
 merged_data["Species"] = [x.split("_")[0] for x in merged_data["Sample"]]
 merged_data["Batch"] = ["_".join(x.split("_")[1:3]) for x in merged_data["Sample"]]
+merged_data.sort_values(by=["Cluster"], inplace=True, ascending=True)
 if palette:
     import json
     with open(palette, "r") as f:
@@ -38,6 +39,32 @@ if palette:
 
 # create output directory
 os.makedirs(output_prefix.parent, exist_ok=True)
+
+# plot umap colored by Cluster for each sample
+for sample_n in merged_data["Sample"].unique():
+    sample_data = merged_data.copy()
+    not_sample = sample_data[sample_data["Sample"] != sample_n].index
+    sample_data.loc[not_sample, "Cluster"] = "11"
+    background = sample_data[sample_data["Cluster"] == "11"]
+    foreground = sample_data[sample_data["Cluster"] != "11"]
+    sample_data = pd.concat([background, foreground])
+    fig, ax = plt.subplots(1, 1, figsize=(20, 15))
+    sns.scatterplot(
+        x="UMAP-1",
+        y="UMAP-2",
+        hue="Cluster",
+        data=sample_data,
+        palette=palette,
+        s=80,
+        ax=ax
+    )
+    output_filename = output_prefix / f"sample={sample_n}.pdf"
+    os.makedirs(output_filename.parent, exist_ok=True)
+    plt.savefig(
+        output_filename
+    )
+
+exit(0)
 
 # plot facet grid of umap colored by Cluster
 row = "Species"
@@ -79,7 +106,7 @@ if n_components == 2:
     )
     plt.savefig(
         output_prefix.with_suffix("").__str__() + "_hue=cluster.png",
-        dpi=300
+        dpi=600
     )
 
 # # test elevation and azimuth using "ptr" data
@@ -196,6 +223,6 @@ if n_components == 3:
     # save plot
     plt.savefig(
         output_prefix.with_suffix("").__str__() + "_hue=cluster.png",
-        dpi=300
+        dpi=600
     )
     

@@ -1,0 +1,53 @@
+---
+params:
+  path_10x: outputs/cellranger/count/{sample}/outs/filtered_feature_bc_matrix
+---
+
+# Testing intra-species the hourglass model
+
+Statistically test whether the two cell lineages (fusiform & ray lineages) share higher transcriptomic similarity at mid stage
+
+```{r}
+library(Seurat)
+library(magrittr)
+```
+
+## Annotate cell lineage
+
+```{r}
+sample_name <- "egr_tenx_batch1"
+seurat_obj <- CreateSeuratObject(
+  Read10X(glue::glue(params$path_10x, sample=sample_name)),
+  project = sample_name
+)
+```
+
+Normalize data
+
+```{r}
+seurat_obj %<>% SCTransform
+```
+
+Run PCA
+
+```{r}
+set.seed(42)
+seurat_obj %<>% RunPCA()
+DimPlot(seurat_obj)
+```
+
+Clustering in the PCA space
+
+```{r}
+set.seed(42)
+seurat_obj %<>% FindNeighbors()
+seurat_obj %<>% FindClusters()
+```
+
+Run UMAP
+
+```{r}
+set.seed(42)
+seurat_obj %<>% RunUMAP(dims=1:30)
+DimPlot(seurat_obj)
+```

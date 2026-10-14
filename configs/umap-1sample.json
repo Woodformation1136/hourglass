@@ -1,0 +1,7 @@
+{
+    "n_neighbors": 50,
+    "n_components": 2,
+    "min_dist": 0.5,
+    "random_state": 17,
+    "n_jobs": 1
+}
