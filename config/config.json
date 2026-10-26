@@ -29,6 +29,7 @@
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch1/fastq_path/HS18186/YCL/"
             ],
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_count_TenX_Ptr/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
                 "colors": ["#1F77B4","#8C564B","#FF7F0F","#2AA02A","#F8E71C","#9467BD","#D62728","#E377C2","#9B9B9B","#4B4B4B"]
             },
@@ -84,6 +85,7 @@
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Egr_batch1",
             "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt",
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
                 "colors": ["#9467BD","#F8E71C","#8C564B","#1F77B4","#2AA02A","#FF7F0F","#D62728","#E377C2","#4B4B4B","#9B9B9B"]
             }
@@ -111,6 +113,7 @@
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Tar_batch1",
             "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt",
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar/outs/analysis/clustering/kmeans_18_clusters/clusters.csv",
                 "colors": ["#1F77B4","#E377C2","#55A3FF","#8C564B","#9467BD","#FF7F0F","#46CBE5","#F8E71C","#2AA02A","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B"]
             }
@@ -131,6 +134,7 @@
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch1/Rawdata/scRNAseq"
             ],
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Lch",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Lch/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
                 "colors": ["#1F77B4","#8C564B","#FF7F0F","#D62728","#F8E71C","#E377C2","#9467BD","#2AA02A","#63EE9B","#9B9B9B"]
             }
