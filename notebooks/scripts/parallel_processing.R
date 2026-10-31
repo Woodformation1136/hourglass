@@ -7,7 +7,7 @@ Sys.setenv(
 )
 # -----
 
-get_n_workers <- function(n_tasks, requested = params$n_parallel) {
+get_n_workers <- function(n_tasks, requested) {
   slurm_cpus <- suppressWarnings(
     as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = NA_character_))
   )

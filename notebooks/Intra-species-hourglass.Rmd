@@ -470,7 +470,9 @@ p_similarity_discrete <- pheatmap(
 Infer Pseudotime using Slingshot based on PCA coordinates
 
 ```{r Infer Pseudotime}
-slingshot_res <- suppressWarnings(slingshot_manual(seurat_obj))
+slingshot_res <- suppressWarnings(
+  slingshot_manual(seurat_obj, lineage_cell_types)
+)
 pseudotime <- slingshot_res$pseudotime
 branch_id <- slingshot_res$branch_id
 
@@ -569,7 +571,7 @@ ggplot(composition, aes(x = bin, y = Freq, fill = cell_type)) +
 
 Identify ray lineage pseudotime bins corresponding to middle stage
 
-```{r get_middle_module}
+```{r Get middle module}
 # read Populus marker genes
 ray_mid_markers <- read.csv(params$path_ray_middle_markers)
 orthogroup <- read.csv(params$path_orthogroup)
@@ -674,8 +676,18 @@ print(align_similarity_matrix)
 Align pseudotime bins
 
 ```{r Run align_similarity_matrix}
-aligned_L1 <- align_similarity_matrix(similarity_L1 %>% t)
-aligned_L2 <- align_similarity_matrix(similarity_L2 %>% t)
+aligned_L1 <- align_similarity_matrix(
+  similarity = similarity_L1 %>% t,
+  window_size = ceiling(
+    as.numeric(params$window_dtw) * max(dim(similarity_L1))
+  )
+)
+aligned_L2 <- align_similarity_matrix(
+  similarity = similarity_L2 %>% t,
+  window_size = ceiling(
+    as.numeric(params$window_dtw) * max(dim(similarity_L2))
+  )
+)
 S_L1 <- aligned_L1$path$similarity
 S_L2 <- aligned_L2$path$similarity
 ```
@@ -919,7 +931,8 @@ permutation_seeds <- sample.int(
 
 # register paralelle backend
 n_workers_perm <- get_n_workers(
-  n_tasks = n_permutation
+  n_tasks = n_permutation,
+  requested = params$n_parallel
 )
 message(
   "Running ", n_permutation, " permutations on ", n_workers_perm, " workers."
@@ -952,6 +965,7 @@ scores_perm_list <- tryCatch(
         "tibble"
       )
     ) %dopar% {
+      source("notebooks/scripts/hourglass_analysis.R")
       
       # permute pseudotime
       pt_i <- pseudotime
@@ -986,10 +1000,16 @@ scores_perm_list <- tryCatch(
 
       # align bins based on similarity
       aligned_L1_perm_i <- align_similarity_matrix(
-        t(similarity_L1_perm_i)
+        t(similarity_L1_perm_i),
+        window_size = ceiling(
+          as.numeric(params$window_dtw) * max(dim(similarity_L1_perm_i))
+        )
       )
       aligned_L2_perm_i <- align_similarity_matrix(
-        t(similarity_L2_perm_i)
+        t(similarity_L2_perm_i),
+        window_size = ceiling(
+          as.numeric(params$window_dtw) * max(dim(similarity_L2_perm_i))
+        )
       )
   
       # calculate hourglass score based on alinged trajectory
@@ -1151,6 +1171,7 @@ run_bootstrap_once <- function(seed) {
 
   tryCatch(
     {
+      source("notebooks/scripts/hourglass_analysis.R")
       # ------------------------------------------------------------
       # 1. Uniformly resample cells and retain published labels
       # ------------------------------------------------------------
@@ -1176,7 +1197,7 @@ run_bootstrap_once <- function(seed) {
       # 3. Re-estimate pseudotime
       # ------------------------------------------------------------
       slingshot_res_i <- suppressWarnings(
-        slingshot_manual(seurat_obj_i)
+        slingshot_manual(seurat_obj_i, lineage_cell_types)
       )
 
       # ------------------------------------------------------------
@@ -1264,10 +1285,17 @@ run_bootstrap_once <- function(seed) {
       # 8. Re-estimate DTW alignments
       # ------------------------------------------------------------
       aligned_L1_i <- align_similarity_matrix(
-        t(similarity_L1_i)
+        t(similarity_L1_i),
+        window_size = ceiling(
+          as.numeric(params$window_dtw) * max(dim(similarity_L1_i))
+        )
+        
       )
       aligned_L2_i <- align_similarity_matrix(
-        t(similarity_L2_i)
+        t(similarity_L2_i),
+        window_size = ceiling(
+          as.numeric(params$window_dtw) * max(dim(similarity_L2_i))
+        )
       )
       
       # report cell state alignment 
@@ -1352,7 +1380,8 @@ bootstrap_seeds <- sample.int(
 
 # register paralelle backend
 n_workers_boot <- get_n_workers(
-  n_tasks = n_bootstrap
+  n_tasks = n_bootstrap,
+  requested = params$n_parallel
 )
 cl_boot <- parallel::makeCluster(
   n_workers_boot

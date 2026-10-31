@@ -43,7 +43,7 @@ calculate_similarity <- function(mat1, mat2, metrics) {
 
 # Run slingshot
 # ------------------------------------------------------------------------------
-slingshot_manual <- function(seurat_obj) {
+slingshot_manual <- function(seurat_obj, lineage_cell_types) {
   lineages <- new("SlingshotDataSet")
   
   # add cell embedding
@@ -64,6 +64,7 @@ slingshot_manual <- function(seurat_obj) {
   
   # add lineages
   lineages@lineages <- lineage_cell_types
+
   
   # add adjacency matrix
   mtx_adj <- matrix(0, nrow = length(levels(clusters)), ncol = length(levels(clusters)))
@@ -199,7 +200,7 @@ get_middle_module <- function(pb_mat, marker) {
 # ------------------------------------------------------------------------------
 align_similarity_matrix <- function(
     similarity,
-    window_size = ceiling(as.numeric(params$window_dtw) * max(dim(similarity)))
+    window_size
 ) {
   local_cost <- 1 - similarity
   fit <- dtw(
