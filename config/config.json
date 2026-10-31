@@ -52,7 +52,50 @@
             "fastq_path": [
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch2/TEN_Populus_trichocarpa_Batch2_20G_150bp/rawData",
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch2/TEN_Populus_trichocarpa_Batch2_80G_150bp/rawData"
-            ]
+            ],
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_batch2"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv1",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv1"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv2",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv2"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv3",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv3"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv4",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv4"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv5",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv5"
+            }
         },
         {
             "name": "ptr_nextseq_batch1",
@@ -76,7 +119,10 @@
             "fastq_path": [
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Eucalyptus_grandis/FASTQ/1/rawData",
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Eucalyptus_grandis/FASTQ/2/rawData"
-            ] 
+            ],
+            "results_old": {
+                "10x": "outputs/cellranger/count/egr_tenx_batch1"
+            }
         },
         {
             "name": "egr_nextseq_batch1",
@@ -95,7 +141,10 @@
             "platform": "nextseq",
             "species": "egr",
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Egr_batch2",
-            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt"
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr2/"
+            }
         },
         {
             "name": "tar_tenx_batch1",
