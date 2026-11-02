@@ -3,6 +3,7 @@
 outputs/*
 logs/*
 nohup-out/*
+notebooks/old/*
 references/*
 src/*
 *test*

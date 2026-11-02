@@ -9,18 +9,19 @@ params:
   assay: RNA
   path_rdata_in: rawdata/Qi_spatial/stall_fin_cnameChecked.Rdata
   path_ray_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Ray Precursor.csv
+  path_fusiform_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Fusiform Early Precursor.csv
   path_orthogroup: outputs/ortholog_info.csv
-  path_outdir: outputs/Hourglass/intra_species_hourglass/ptr_st_qi
+  path_outdir: test/Hourglass/intra_species_hourglass/ptr_bmkgene_4-7/spearman
   n_bins: 10
   n_permutation: 50
   n_bootstrap: 50
   n_parallel: 10
   seed: 42
-  window_dtw: 0.5
+  window_dtw: 0.4
   metric: spearman
-  path_key_data: null
-  path_key_summary: null
-  path_image: null
+  path_key_data: test/Hourglass/intra_species_hourglass/ptr_bmkgene_4-7/spearman/key_data.csv
+  path_key_summary: test/Hourglass/intra_species_hourglass/ptr_bmkgene_4-7/spearman/key_summary.csv
+  path_image: test/Hourglass/intra_species_hourglass/ptr_bmkgene_4-7/spearman/Rdata.rds
 output:
   html_document:
     df_print: paged
@@ -42,6 +43,8 @@ library(pheatmap, quietly = TRUE)
 library(foreach, quietly = TRUE)
 library(doSNOW, quietly = TRUE)
 library(patchwork, quietly = TRUE)
+source("notebooks/scripts/hourglass_analysis.R")
+source("notebooks/scripts/parallel_processing.R")
 knitr::opts_chunk$set(cache = FALSE)
 ```
 
@@ -58,45 +61,19 @@ params
 # this report's params or intermediate objects.
 input_env <- new.env(parent = emptyenv())
 load(params$path_rdata_in, envir = input_env)
-if (!exists("stall_fin", envir = input_env, inherits = FALSE)) {
-  stop("The input Rdata must contain the Seurat object 'stall_fin'.")
-}
 seurat_obj <- input_env$stall_fin
 rm(input_env)
-if (!inherits(seurat_obj, "Seurat")) stop("stall_fin is not a Seurat object.")
-if (!all(c("orig.ident", "celltype2") %in% colnames(seurat_obj[[]]))) {
-  stop("The Seurat metadata must contain orig.ident and celltype2.")
-}
+
+# subset biorep cells
 print(table(seurat_obj$orig.ident))
 biorep_id <- as.character(params$biorep_id)
-if (length(biorep_id) != 1L || is.na(biorep_id) || !nzchar(biorep_id)) {
-  stop("Set params$biorep_id to one orig.ident value: 1-7, 3-7, or 4-7.")
-}
-replicate_cells <- rownames(seurat_obj[[]])[
-  as.character(seurat_obj$orig.ident) == biorep_id &
-    !is.na(seurat_obj$orig.ident)
-]
-if (!length(replicate_cells)) stop("No cells found for biorep_id: ", biorep_id)
+replicate_cells <- which(seurat_obj$orig.ident == biorep_id) %>% names
 seurat_obj <- subset(seurat_obj, cells = replicate_cells)
 
 # Select a raw-count assay; do not use integrated expression by default.
 assay <- params$assay
-available_assays <- SeuratObject::Assays(seurat_obj)
-if (is.null(assay) || !nzchar(as.character(assay))) {
-  candidates <- intersect(c("RNA", "Spatial"), available_assays)
-  if (!length(candidates)) {
-    stop("Set params$assay to the raw-count assay. Available: ",
-         paste(available_assays, collapse = ", "))
-  }
-  assay <- candidates[1L]
-}
-assay <- as.character(assay)
-if (!assay %in% available_assays) stop("Missing assay: ", assay)
 DefaultAssay(seurat_obj) <- assay
-if (!setequal(Cells(seurat_obj), colnames(seurat_obj))) {
-  stop("The chosen count assay must contain all cells in this replicate.")
-}
-if (inherits(seurat_obj[[assay]], "Assay5")) {
+if (inherits(seurat_obj[[params$assay]], "Assay5")) {
   count_layers <- SeuratObject::Layers(seurat_obj[[assay]], search = "^counts($|\\.)")
   if (!length(count_layers)) stop("The selected assay has no counts layer.")
   if (!identical(count_layers, "counts")) {
@@ -105,50 +82,29 @@ if (inherits(seurat_obj[[assay]], "Assay5")) {
     )
   }
 }
-counts_check <- LayerData(seurat_obj, assay = assay, layer = "counts")
-if (!all(Cells(seurat_obj) %in% colnames(counts_check)) ||
-    !nrow(counts_check) || any(Matrix::colSums(counts_check) <= 0)) {
-  stop("Raw counts are missing, incomplete, or contain zero-library cells.")
-}
-rm(counts_check)
 
 # Keep the original CSV column schema, but give every biological replicate
 # a distinct sample_id and individual_id.
-get_param_or <- function(name, default) {
-  value <- params[[name]]
-  if (is.null(value) || !length(value) || all(is.na(value)) ||
-      !nzchar(as.character(value)[1L])) return(default)
-  as.character(value)[1L]
-}
-sample_metadata <- list(
-  sample_id = paste(get_param_or("sample_id", "ptr_st_qi"), biorep_id, sep = "_"),
-  individual_id = get_param_or(
-    "individual_id",
-    paste(get_param_or("sample_id", "ptr_st_qi"), biorep_id, sep = "_")
-  ),
-  condition = get_param_or("condition", "ptr_st_qi"),
-  batch = get_param_or("batch", "unspecified")
-)
-output_dir <- file.path(params$path_outdir, biorep_id, params$metric)
-output_stem <- paste(sample_metadata$sample_id, params$metric, sep = "-")
-path_key_data <- get_param_or(
-  "path_key_data", file.path(output_dir, paste0(output_stem, "-key_data.csv"))
-)
-path_key_summary <- get_param_or(
-  "path_key_summary", file.path(output_dir, paste0(output_stem, "-key_summary.csv"))
-)
-path_image <- get_param_or(
-  "path_image", file.path(output_dir, paste0(output_stem, ".rdata"))
-)
+# get_param_or <- function(name, default) {
+#   value <- params[[name]]
+#   if (is.null(value) || !length(value) || all(is.na(value)) ||
+#       !nzchar(as.character(value)[1L])) return(default)
+#   as.character(value)[1L]
+# }
+# sample_metadata <- list(
+#   sample_id = paste(get_param_or("sample_id", "ptr_st_qi"), biorep_id, sep = "_"),
+#   individual_id = get_param_or(
+#     "individual_id",
+#     paste(get_param_or("sample_id", "ptr_st_qi"), biorep_id, sep = "_")
+#   ),
+#   condition = get_param_or("condition", "ptr_st_qi"),
+#   batch = get_param_or("batch", "unspecified")
+# )
+output_dir <- params$path_outdir
+path_key_data <- params$path_key_data
+path_key_summary <- params$path_key_summary
+path_image <- params$path_image
 message("Biorep: ", biorep_id, "; raw-count assay: ", assay)
-stopifnot(
-  params$metric %in% c("spearman", "pearson", "Jensen-Shannon"),
-  params$n_bins >= 4, params$n_bins == as.integer(params$n_bins),
-  params$n_permutation >= 1, params$n_permutation == as.integer(params$n_permutation),
-  params$n_bootstrap >= 2, params$n_bootstrap == as.integer(params$n_bootstrap),
-  params$n_parallel >= 1, is.finite(params$window_dtw), params$window_dtw >= 0,
-  params$seed >= 0, params$seed < .Machine$integer.max - 1L
-)
 ```
 
 Check data
@@ -219,46 +175,6 @@ Sys.setenv(
   MKL_NUM_THREADS = "1",
   VECLIB_MAXIMUM_THREADS = "1"
 )
-get_n_workers <- function(n_tasks, requested = params$n_parallel) {
-  slurm_cpus <- suppressWarnings(
-    as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = NA_character_))
-  )
-
-  available <- if (is.na(slurm_cpus)) {
-    detected <- parallel::detectCores(logical = FALSE)
-    if (is.na(detected)) 1L else max(1L, detected - 1L)
-  } else {
-    slurm_cpus
-  }
-
-  max(
-    1L, 
-    min(as.integer(requested), as.integer(n_tasks), available)
-  )
-}
-make_parallel_progress <- function(n) {
-  pb <- utils::txtProgressBar(
-    min = 0,
-    max = n,
-    style = 3,
-    file = stderr()
-  )
-
-  list(
-    pb = pb,
-    snow_options = list(
-      progress = function(completed) {
-        utils::setTxtProgressBar(
-          pb,
-          completed
-        )
-      },
-
-      # Required for progress to update as individual tasks finish.
-      preschedule = FALSE
-    )
-  )
-}
 ```
 
 Global variables
@@ -270,12 +186,23 @@ fusiform_lineage <- c(
   "XPC"
 )
 ray_lineage <- c(
-  "RIC_1",
-  "RIC_2",
-  "XRP_1",
-  "XRP_2",
-  "XRP_3"
+  "RIC1",
+  "RIC2",
+  "XRP1",
+  "XRP2",
+  "XRP3"
 )
+my_st_cols2 <- c(
+  "XRP2"   = "#F56867",
+  "XRP3"   = "#3A84E6",
+  "XRP1"   = "#787878",
+  "RIC2"   = "#15821E",
+  "XMC"     = "#D1D1D1",
+  "XPC"     = "#997273",
+  "RIC1"   = "#d80fc1",
+  "FIC"     = "#DB4C6C"
+)
+
 cluster_levels <- c(fusiform_lineage, ray_lineage)
 ordered_factor <- function(values) {
   factor(
@@ -292,59 +219,17 @@ lineage_cell_types <- list(
 )
 ```
 
-Helper functions
-
-```{r Define helper functions}
-logcpm <- function(x) {
-  totals <- colSums(x)
-  if (any(!is.finite(totals) | totals <= 0)) {
-    stop("A pseudobulk has no expression among the selected genes.")
-  }
-  log2(1 + 1e6 * sweep(as.matrix(x), 2, totals, "/"))
-}
-calculate_js_similarity <- function(mat1, mat2) {
-  out <- jsDist(cbind(mat1, mat2))[
-      1:ncol(mat1),
-      (ncol(mat1)+1):(ncol(mat1)+ncol(mat2))
-  ]
-  rownames(out) <- colnames(mat1)
-  colnames(out) <- colnames(mat2)
-  return(1 - out)
-}
-calculate_similarity <- function(mat1, mat2, metrics) {
-  stopifnot(metrics %in% c("spearman", "pearson", "Jensen-Shannon"))
-  if (metrics %in% c("spearman", "pearson")) {
-    cor(
-      x = logcpm(mat1),
-      y = logcpm(mat2),
-      method = metrics
-    )
-  } else if (metrics == "Jensen-Shannon") {
-    calculate_js_similarity(
-      as.matrix(mat1),
-      as.matrix(mat2)
-    )
-  }
-}
-```
-
 ## Seurat preprocessing
 
 Use Qi's annotations and re-estimate variable genes and PCA within this biological replicate.
 
 ```{r Import cell label}
 seurat_obj$cell_label <- factor(
-  as.character(seurat_obj$celltype2), levels = cluster_levels
+  seurat_obj$celltype2 %>% 
+    as.character %>%
+    sub("_", "", .), 
+  levels = cluster_levels
 )
-keep_cells <- Cells(seurat_obj)[!is.na(seurat_obj$cell_label)]
-if (!length(keep_cells)) stop("No cells belong to the specified lineages.")
-message(ncol(seurat_obj) - length(keep_cells), " cells outside the two lineages excluded.")
-seurat_obj <- subset(seurat_obj, cells = keep_cells)
-missing_labels <- setdiff(cluster_levels, unique(as.character(seurat_obj$cell_label)))
-if (length(missing_labels)) {
-  stop("Biorep ", biorep_id, " lacks required states: ",
-       paste(missing_labels, collapse = ", "))
-}
 Idents(seurat_obj) <- "cell_label"
 print(table(seurat_obj$cell_label))
 ```
@@ -383,18 +268,16 @@ p1 | p2
 Pairwise transcriptomic similarity among discrete cell states
 
 ```{r Discrete stages hourlgass}
-# Use temporary group IDs because Seurat may replace underscores in names.
-state_ids <- setNames(sprintf("State%02d", seq_along(cluster_levels)), cluster_levels)
-seurat_obj$state_group <- unname(state_ids[as.character(seurat_obj$cell_label)])
+# # Use temporary group IDs because Seurat may replace underscores in names.
+# state_ids <- setNames(sprintf("State%02d", seq_along(cluster_levels)), cluster_levels)
+# seurat_obj$state_group <- unname(state_ids[as.character(seurat_obj$cell_label)])
 pb_discrete <- AggregateExpression(
   seurat_obj,
   assays = assay,
   features = VariableFeatures(seurat_obj),
-  group.by = "state_group",
+  group.by = "cell_label",
   verbose = FALSE
 )[[assay]]
-pb_discrete <- pb_discrete[, unname(state_ids), drop = FALSE]
-colnames(pb_discrete) <- cluster_levels
 similarity_discrete <- calculate_similarity(
   pb_discrete[, fusiform_lineage, drop = FALSE],
   pb_discrete[, ray_lineage, drop = FALSE],
@@ -454,116 +337,41 @@ p_similarity_discrete <- pheatmap(
     (2) Repeat Step 1-5\
     (3) Estimate bootstrap confidence interval
 
-### 1. Pseudotime inference
+### 0. test
 
-Slingshot pseudotimes were inferred based on PCA coordinates
-
-```{r Create SlingshotDataSet}
-slingshot_manual <- function(
-    seurat_obj,
-    extend = "y",
-    stretch = 2,
-    maxit = 15
-  ) {
-  missing <- setdiff(cluster_levels, unique(as.character(seurat_obj$cell_label)))
-  if (length(missing)) stop("Missing developmental states: ", paste(missing, collapse = ", "))
-  lineages <- new("SlingshotDataSet")
-
-  # add cell embedding
-  lineages@reducedDim <- seurat_obj %>% 
-    Embeddings(reduction = "pca") %>% 
-    extract(1:dim(seurat_obj)[2], 1:10) %>%
-    as.matrix
-  
-  # add cluster matrix
-  clusters <- factor(as.character(seurat_obj$cell_label), levels = cluster_levels)
-  names(clusters) <- Cells(seurat_obj)
-  mtx_clus <- matrix(0, nrow=length(clusters), ncol=length(levels(clusters)))
-  row.names(mtx_clus) <- names(clusters)
-  colnames(mtx_clus) <- levels(clusters)
-  for (i in seq(length(clusters))) {
-    mtx_clus[names(clusters)[i], clusters[i]] <- 1
-  }
-  lineages@clusterLabels <- mtx_clus
-  
-  # add lineages
-  lineages@lineages <- lineage_cell_types
-  
-  # add adjacency matrix
-  mtx_adj <- matrix(0, nrow = length(levels(clusters)), ncol = length(levels(clusters)))
-  row.names(mtx_adj) <- colnames(mtx_adj) <- levels(clusters)
-  for (l_i in lineages@lineages) {
-    for (c_i in seq(length(l_i) - 1)) {
-      mtx_adj[l_i[c_i], l_i[c_i + 1]] <- 1
-      mtx_adj[l_i[c_i + 1], l_i[c_i]] <- 1
-    }
-  }
-  lineages@adjacency <- mtx_adj
-  
-  # fit curves
-  curves <- getCurves(
-    lineages,
-    approx_points = 100,
-    reassign = FALSE,
-    shrink = FALSE,
-    extend = extend,
-    stretch = stretch,
-    maxit = maxit
-  ) %>% SlingshotDataSet
-  
-  # estimate pseudotime
-  pseudotime <- slingPseudotime(
-    curves,
-    na = FALSE
-  )
-  rownames(pseudotime) <- Cells(seurat_obj)
-  branch_id <- slingBranchID(curves)
-  return(
-    list(
-      SlingshotDataSet = curves,
-      pseudotime = pseudotime,
-      branch_id = branch_id
-    )
-  )
-}
-
-# slingshot_manual <- function(seurat_obj) {
-#   pseudotime <- matrix(NA, nrow = dim(seurat_obj)[2], ncol = length(lineage_cell_types))
-#   branch_id <- rep("-", dim(seurat_obj)[2])
-#   colnames(pseudotime) <- names(lineage_cell_types)
-#   rownames(pseudotime) <- Cells(seurat_obj)
-#   names(branch_id) <- Cells(seurat_obj)
-#   sce_list <- list()
-#   for (l_i in seq_along(lineage_cell_types)) {
-#     l <- lineage_cell_types[[l_i]]
-#     sub_obj <- subset(seurat_obj, cell_label %in% l)
-#     sce <- as.SingleCellExperiment(sub_obj, assay = "RNA")
-#     sce <- slingshot(
-#       sce,
-#       reducedDim = "PCA",   # 或 'PCA'
-#       clusterLabels = "cell_label",
-#       start.clus = l[1],
-#       end.clus = l[length(l)],
-#     )
-#     pt <- slingPseudotime(sce)
-#     pseudotime[Cells(sub_obj), names(lineage_cell_types)[l_i]] <- pt[Cells(sub_obj), 1]
-#     branch_id[Cells(sub_obj)] <- l_i
-#     sce_list[[l_i]] <- sce
-#   }
-#   return(
-#     list(
-#       SlingshotDataSet = sce_list,
-#       pseudotime = pseudotime,
-#       branch_id = as.factor(branch_id)
-#     )
-#   )
-# }
+```{r}
+# fusiform_cells <- colnames(seurat_obj)[seurat_obj$cell_label %in% fusiform_lineage]
+# ray_cells      <- colnames(seurat_obj)[seurat_obj$cell_label %in% ray_lineage]
+# 
+# # 3. 計算各自的總細胞數，並決定要抽取的相同數量 (取兩者較小值)
+# n_fusiform <- length(fusiform_cells)
+# n_ray      <- length(ray_cells)
+# sample_size <- min(n_fusiform, n_ray)
+# 
+# message("Fusiform 總數: ", n_fusiform)
+# message("Ray 總數: ", n_ray)
+# message("每個譜系將隨機抽取 ", sample_size, " 顆細胞")
+# 
+# # 4. 進行隨機抽樣 (設定隨機種子以確保結果可重複)
+# set.seed(42)
+# sampled_fusiform <- sample(fusiform_cells, size = sample_size, replace = FALSE)
+# sampled_ray      <- sample(ray_cells,      size = sample_size, replace = FALSE)
+# 
+# # 5. 合併抽樣後的細胞條碼，並對原始 Seurat 物件進行子集化 (Subset)
+# all_sampled_cells <- c(sampled_fusiform, sampled_ray)
+# seurat_obj    <- subset(seurat_obj, cells = all_sampled_cells)
+# 
+# # 6. 驗證抽樣後的各群細胞數量
+# table(seurat_obj$cell_label)
 ```
 
-Infer Pseudotime
+
+### 1. Pseudotime inference
+
+Infer Pseudotime based on PCA coordinates
 
 ```{r Infer Pseudotime}
-slingshot_res <- suppressWarnings(slingshot_manual(seurat_obj))
+slingshot_res <- suppressWarnings(slingshot_manual(seurat_obj, lineage_cell_types))
 pseudotime <- slingshot_res$pseudotime
 branch_id <- slingshot_res$branch_id
 
@@ -585,7 +393,7 @@ p_pt <- FeaturePlot(
   ) +
   theme_void(
   )
-p_pt + theme(legend.position = "bottom") | p_cluster + theme(legend.position = "none")
+p_pt + theme(legend.position = "bottom") | p_cluster + theme(legend.position = "bottom")
 ```
 
 ### 2. Bin expression by pseudotime
@@ -595,46 +403,22 @@ Expression was aggregated within equal-width pseudotime bins independently for e
 Fusiform and ray bins were subsequently aligned using a constrained monotonic DTW (Dynamic Time Warping) path.
 
 ```{r Bin expression}
-bin_expression <- function(
-    seurat_obj,
-    pseudotime_mtx,
-    lineage,
-    prefix,
-    n_bins
-) {
-  stopifnot(identical(rownames(pseudotime_mtx), Cells(seurat_obj)))
-  pt <- pseudotime_mtx[, lineage]
-  # Qi's labels define disjoint lineages, regardless of Slingshot branch IDs.
-  keep <- as.character(seurat_obj$cell_label) %in% lineage_cell_types[[lineage]] &
-    is.finite(pt)
-  pt <- pt[keep]
-  if (length(pt) < 2L || diff(range(pt)) <= 0) {
-    stop("Insufficient pseudotime variation in ", prefix, ".")
-  }
-  bins <- cut(
-    pt, breaks = seq(min(pt), max(pt), length.out = n_bins + 1L),
-    labels = FALSE, include.lowest = TRUE
-  )
-  names(bins) <- names(pt)
-  obj <- subset(seurat_obj, cells = names(pt))
-  obj$bin <- sprintf("%s-%02d", prefix, bins[Cells(obj)])
-  current_assay <- DefaultAssay(obj)
-  pb <- AggregateExpression(
-    obj, assays = current_assay, group.by = "bin", verbose = FALSE
-  )[[current_assay]]
-  pb <- pb[, order(colnames(pb)), drop = FALSE]
-  comp <- table(
-    bin = factor(bins, levels = seq_len(n_bins)),
-    cell_type = factor(as.character(seurat_obj$cell_label[keep]), levels = cluster_levels)
-  )
-  list(Pseudobulk = pb, Composition = comp)
-}
 n_bins <- as.integer(params$n_bins)
 res_L1 <- bin_expression(
-  seurat_obj, pseudotime, lineage = 1, n_bins = n_bins, prefix = "Fusiform"
+  seurat_obj,
+  pseudotime, 
+  branch_id,
+  lineage = 1, 
+  n_bins = n_bins, 
+  prefix = "Fusiform"
 )
 res_L2 <- bin_expression(
-  seurat_obj, pseudotime, lineage = 2, n_bins = n_bins, prefix = "Ray"
+  seurat_obj, 
+  pseudotime,
+  branch_id, 
+  lineage = 2, 
+  n_bins = n_bins, 
+  prefix = "Ray"
 )
 pb_L1 <- res_L1$Pseudobulk
 pb_L2 <- res_L2$Pseudobulk
@@ -648,12 +432,6 @@ bin_occupancy <- data.frame(
   Ray = as.integer(rowSums(comp_L2))
 )
 print(bin_occupancy)
-missing_ray_bins <- setdiff(sprintf("Ray-%02d", seq_len(n_bins)), colnames(pb_L2))
-if (length(missing_ray_bins)) {
-  message("Empty ray reference bins omitted from DTW: ",
-          paste(missing_ray_bins, collapse = ", "))
-}
-head(pb_L2)
 ```
 
 Check bin composition
@@ -673,7 +451,8 @@ ggplot(composition, aes(x = bin, y = Freq, fill = cell_type)) +
   facet_wrap(~lineage, ncol = 1) +
   scale_y_continuous(labels = scales::label_percent()) +
   scale_x_discrete(drop = FALSE) +
-  scale_fill_brewer(palette = "Set1") +
+  # scale_fill_brewer(palette = "Set1") +
+  scale_fill_manual(values = my_st_cols2) +
   theme_bw() +
   labs(
     x = "Pseudotime bin",
@@ -684,65 +463,112 @@ ggplot(composition, aes(x = bin, y = Freq, fill = cell_type)) +
 
 Identify ray bins corresponding to the middle stage.
 
-```{r Record bin-stage correspondance}
+```{r}
 # read Populus marker genes
 ray_mid_markers <- read.csv(params$path_ray_middle_markers)
-orthogroup <- read.csv(params$path_orthogroup)
+fusiform_middle_markers <- read.csv(params$path_fusiform_middle_markers)
 
 # get ortho-markers
+orthogroup <- read.csv(params$path_orthogroup)
 species_marker <- get_markers(orthogroup, ray_mid_markers$gene, params$sample_id)
+species_marker_fu <- get_markers(orthogroup, fusiform_middle_markers$gene, params$sample_id)
 
 # get middle module
-get_middle_module <- function(pb_mat, marker) {
-  marker <- intersect(row.names(pb_mat), marker)
-  middle_peak <- pb_mat[marker, ] %>% logcpm %>% colMeans %>% which.max
-  return(
-    list(
-      early = 1:(middle_peak-2),
-      middle = (middle_peak-1):(middle_peak+1),
-      late = (middle_peak+2):ncol(pb_mat)
-    )
-  )
-}
-modules <- get_middle_module(pb_L2, species_marker)
-modules
-```
+modules <- get_middle_module(
+  pb_mat = pb_L2, 
+  marker = species_marker, 
+  candidate_index = get_candidate_bins(comp_L2, c("XRP1", "XRP2")), 
+  norm_func = logcpm
+)
+modules_fu <- get_middle_module(
+  pb_mat = pb_L1, 
+  marker = species_marker_fu, 
+  candidate_index = get_candidate_bins(comp_L1, c("XMC")), 
+  norm_func = logcpm
+)
+print(modules)
+print(modules_fu)
+window_lineage <- modules$middle[1] - modules_fu$middle[1]
 
-```{r Plot marker gene expression}
+# plot marker expression
 species_marker_detected <- intersect(rownames(pb_L2), species_marker)
-colSes <- function(mat) {
-  n_counts <- colSums(!is.na(mat))
-  colSds(mat, na.rm = TRUE) / sqrt(n_counts)
-}
-p <- ggplot(
-    data.frame(
-      mean = pb_L2[species_marker_detected, ] %>% logcpm %>% colMeans,
-      sd = pb_L2[species_marker_detected, ] %>% logcpm %>% colSds,
-      bin = colnames(pb_L2),
-      count = colSums(pb_L2[species_marker_detected, ] > 0)
-    ) %>% dplyr::mutate(
-      x = sprintf("%s (n = %s)", bin, count),
-      ymin = mean - 1 * sd,
-      ymax = mean + 1 * sd
-    ),
-    aes(
-      x = x, 
-      y = mean,
-      group = "1"
-    )
-  ) +
+data_plot <- data.frame(
+    mean = get_marker_profile(pb_L2, species_marker),
+    bin = colnames(pb_L2),
+    count = colSums(pb_L2[species_marker_detected, ] > 0),
+    lineage = "Ray"
+) %>% dplyr::mutate(
+  x = sprintf("%s (n = %s)", bin, count)
+)
+data_plot_fu <- data.frame(
+  mean = get_marker_profile(pb_L1, species_marker_fu),
+  bin = colnames(pb_L1),
+  count = colSums(pb_L1[intersect(rownames(pb_L1), species_marker), ] > 0),
+  lineage = "Fusiform-Fiber"
+) %>% dplyr::mutate(
+  x = sprintf("%s (n = %s)", bin, count)
+)
+ggplot(
+  data_plot,
+  aes(
+    x = x, 
+    y = mean,
+    group = lineage,
+    color = lineage
+  )
+) +
   geom_point() +
   geom_line() +
+  annotate(
+    "rect",
+    xmin = min(modules$middle) - 0.5,
+    xmax = max(modules$middle) + 0.5,
+    ymin = min(data_plot$mean, na.rm = TRUE),
+    ymax = max(data_plot$mean, na.rm = TRUE),
+    alpha = 0.2,
+    fill = "purple"
+  ) +
   theme_bw() +
   theme(
     axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)
   ) +
   labs(
     title = "Average expression level of middle-stage marker genes",
+    subtitle = "Shade = Mid-development stages; n = detected markers",
     x = "Ray pseudotime bins",
-    y = "log(CPM)"
+    y = "log2(CPM)",
+    
   )
-p
+ggplot(
+  data_plot_fu,
+  aes(
+    x = x, 
+    y = mean,
+    group = lineage,
+    color = lineage
+  )
+) +
+  geom_point() +
+  geom_line() +
+  annotate(
+    "rect",
+    xmin = min(modules_fu$middle) - 0.5,
+    xmax = max(modules_fu$middle) + 0.5,
+    ymin = min(data_plot_fu$mean, na.rm = TRUE),
+    ymax = max(data_plot_fu$mean, na.rm = TRUE),
+    alpha = 0.2,
+    fill = "purple"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)
+  ) +
+  labs(
+    title = "Average expression level of middle-stage marker genes",
+    subtitle = "Shade = Mid-development stages; n = detected markers",
+    x = "Fusiform pseudotime bins",
+    y = "log2(CPM)",
+  )
 ```
 
 ### 3. Pairwise similarity of pseudotime bins
@@ -773,50 +599,15 @@ pheatmap(
 
 ### 4. Align pseudotime bins
 
-Find the correspondence between lineage pseudotime by the Dynamic Time Warping (DTW) algorithm:
-
-```{r Define align_similarity_matrix}
-extract_bin_id <- function(x) {
-  as.integer(sub("^.*-([0-9]+)$", "\\1", x))
-}
-align_similarity_matrix <- function(
-  similarity,
-  window_size = ceiling(as.numeric(params$window_dtw) * max(dim(similarity)))
-) {
-  local_cost <- 1 - similarity
-  fit <- dtw(
-    x = local_cost,
-    y = NULL,
-    step.pattern = dtw::asymmetric, # Each ray bin is matched exactly once.
-    window.type = "slantedband",
-    window.size = window_size,
-    open.begin = TRUE,
-    open.end = TRUE,
-    keep.internals = TRUE,
-    distance.only = FALSE
-  )
-
-  path <- tibble::tibble(
-    L1_i = fit$index1,
-    L2_i = fit$index2,
-    L1_bin = rownames(similarity)[fit$index1],
-    L2_bin = colnames(similarity)[fit$index2],
-    similarity = similarity[
-      cbind(fit$index1, fit$index2)
-    ]
-  )
-  list(
-    fit = fit,
-    path = path,
-    local_cost = local_cost
-  )
-}
-```
-
 Align pseudotime bins
 
 ```{r Run align_similarity_matrix}
-aligned_L1 <- align_similarity_matrix(similarity_L1 %>% t)
+aligned_L1 <- align_similarity_matrix(
+  similarity_L1 %>% t,
+  window_size = ceiling(
+    as.numeric(params$window_dtw) * max(dim(similarity_L1))
+  )
+)
 S_L1 <- aligned_L1$path$similarity
 ```
 
@@ -916,61 +707,6 @@ p_path_L1
 Summarize cell type correspondence along the aligned path
 
 ```{r}
-composition_proportions <- function(comp, states) {
-  comp <- as.matrix(comp)
-  out <- matrix(
-    0, nrow = nrow(comp), ncol = length(states), 
-    dimnames = list(rownames(comp), states)
-  )
-  shared_states <- intersect(colnames(comp), states)
-
-  out[, shared_states] <- comp[, shared_states, drop = FALSE]
-
-  totals <- rowSums(out)
-
-  sweep(out, 1, pmax(totals, 1), "/")
-}
-alignment_label_mass <- function(
-    aligned,
-    comp_query,
-    comp_reference,
-    query_states,
-    reference_states
-) {
-  # get cell state proportion in
-  query_prop <- composition_proportions(comp_query, query_states)
-  reference_prop <- composition_proportions(comp_reference, reference_states)
-
-  # get alignment path
-  path <- aligned$path
-  query_bin <- as.character(extract_bin_id(path$L1_bin))
-  reference_bin <- as.character(extract_bin_id(path$L2_bin))
-
-  
-  mass <- matrix(
-    0, nrow = length(query_states), ncol = length(reference_states),
-    dimnames = list(query_state = query_states, reference_state = reference_states)
-  )
-
-  for (k in seq_len(nrow(path))) {
-    mass <- mass + tcrossprod(
-        query_prop[query_bin[k], , drop = TRUE],
-        reference_prop[reference_bin[k], , drop = TRUE]
-      )
-  }
-
-  # Equal weight for each Fusiform query pseudotime position.
-  mass <- mass / nrow(path)
-
-  stopifnot(
-    isTRUE(all.equal(sum(mass), 1, tolerance = 1e-8))
-  )
-
-  mass
-}
-
-
-# 
 alignment_mass_L1 <- alignment_label_mass(
   aligned = aligned_L1,
   comp_query = comp_L2,
@@ -992,7 +728,7 @@ Plot transcriptomic similarity along the aligned trajectory path
 # Repeated/skipped Ray reference matches do not change Fusiform bin weights.
 p_aligned_similarity <- ggplot(
   aligned_L1$path,
-  aes(x = extract_bin_id(L1_bin), y = similarity)
+  aes(x = L1_i, y = similarity)
 ) +
   annotate(
     "rect",
@@ -1030,23 +766,6 @@ $$
 
 A positive score requires the middle-stage similarity to exceed both the early- and late-stage similarities.
 
-```{r Define function for calculating hourglass scores}
-hourglass_score <- function(S, modules) {
-  if (any(lengths(modules) == 0L) || any(!is.finite(S[unlist(modules)]))) {
-    stop("Cannot score empty stages or non-finite aligned similarities.")
-  }
-  E <- mean(S[modules$early], na.rm = TRUE)
-  M <- mean(S[modules$middle], na.rm = TRUE)
-  L <- mean(S[modules$late], na.rm = TRUE)
-  c(
-    Early = E,
-    Middle = M,
-    Late = L,
-    H = min(M - E, M - L)
-  )
-}
-```
-
 ```{r Calculate the hourglass score}
 scores_observed <- as.data.frame(t(hourglass_score(S_L1, modules))) %>%
   dplyr::mutate(comparison = "Fusiform-Ray", permutation = "Observed")
@@ -1077,7 +796,8 @@ permutation_seeds <- sample.int(
 
 # register paralelle backend
 n_workers_perm <- get_n_workers(
-  n_tasks = n_permutation
+  n_tasks = n_permutation,
+  requested = params$n_parallel
 )
 message(
   "Running ", n_permutation, " permutations on ", n_workers_perm, " workers."
@@ -1101,10 +821,6 @@ scores_perm_list <- tryCatch(
       i = seq_len(n_permutation),
       .inorder = FALSE,
       .options.snow = perm_progress$snow_options,
-      .export = c(
-        "lineage_cell_types", "cluster_levels", "logcpm", "calculate_js_similarity",
-        "extract_bin_id", "params"
-      ),
       .packages = c(
         "Seurat",
         "Matrix",
@@ -1114,7 +830,8 @@ scores_perm_list <- tryCatch(
         "tibble"
       )
     ) %dopar% {
-      
+      source("notebooks/scripts/hourglass_analysis.R")
+
       # permute pseudotime
       pt_i <- pseudotime
       set.seed(permutation_seeds[i])
@@ -1125,13 +842,20 @@ scores_perm_list <- tryCatch(
 
       # Only the Ray pseudotime-to-expression association is shuffled.
       res_L2_i <- bin_expression(
-        seurat_obj, pt_i, lineage = 2, n_bins = n_bins, prefix = "Ray"
+        seurat_obj, pt_i, branch_id, lineage = 2, n_bins = n_bins, prefix = "Ray"
       )
       pb_L2_i <- res_L2_i$Pseudobulk
       similarity_perm_i <- calculate_similarity(
-        pb_L1[genes, , drop = FALSE], pb_L2_i[genes, , drop = FALSE], metrics = metric
+        pb_L1[genes, , drop = FALSE], 
+        pb_L2_i[genes, , drop = FALSE], 
+        metrics = metric
       )
-      aligned_perm_i <- align_similarity_matrix(similarity_perm_i %>% t)
+      aligned_perm_i <- align_similarity_matrix(
+        similarity_perm_i %>% t,
+        window_size = ceiling(
+          as.numeric(params$window_dtw) * max(dim(similarity_perm_i))
+        )
+      )
       score_matrix <- t(hourglass_score(
         aligned_perm_i$path$similarity,
         modules
@@ -1229,87 +953,6 @@ There is only one comparison, so no two-branch joint statistic is computed. The 
 Re-sample cells with replacement, repeat the procedure for estimating the hourglass score, and calculate the confidence interval of the hourglass score.
 
 ```{r Define bootstrapping helper functions}
-# Re-sampling cells from a SeuratObject with replacement
-make_bootstrap_seurat <- function(
-    seurat_obj,
-    seed,
-    assay = DefaultAssay(seurat_obj)
-) {
-  set.seed(seed)
-
-  n_cells <- ncol(seurat_obj)
-
-  # Bootstrap draw: integer indices preserve repeated selections.
-  sampled_idx <- sample.int(
-    n = n_cells,
-    size = n_cells,
-    replace = TRUE
-  )
-
-  source_cells <- Cells(seurat_obj)[sampled_idx]
-
-  # Extract raw counts, preserving duplicated columns.
-  counts_boot <- LayerData(
-    seurat_obj,
-    assay = assay,
-    layer = "counts"
-  )[, source_cells, drop = FALSE]
-
-  # Every bootstrap draw requires its own unique object-level ID.
-  bootstrap_cells <- sprintf(
-    "Boot-%05d__%s",
-    seq_len(n_cells),
-    source_cells
-  )
-
-  colnames(counts_boot) <- bootstrap_cells
-
-  # Copy metadata according to the same sampled indices.
-  meta_boot <- seurat_obj[[]][
-    sampled_idx,
-    ,
-    drop = FALSE
-  ]
-
-  meta_boot$source_cell <- source_cells
-  meta_boot$bootstrap_draw <- seq_len(n_cells)
-
-  rownames(meta_boot) <- bootstrap_cells
-
-  # Let CreateSeuratObject recalculate these fields.
-  qc_columns <- intersect(
-    c(
-      paste0("nCount_", assay),
-      paste0("nFeature_", assay)
-    ),
-    colnames(meta_boot)
-  )
-
-  meta_boot <- meta_boot[
-    ,
-    setdiff(colnames(meta_boot), qc_columns),
-    drop = FALSE
-  ]
-
-  object_boot <- CreateSeuratObject(
-    counts = counts_boot,
-    assay = assay,
-    meta.data = meta_boot,
-    project = paste0(Project(seurat_obj), "_bootstrap")
-  )
-
-  # Preserve your published biological labels.
-  if ("cell_label" %in% colnames(object_boot[[]])) {
-    Idents(object_boot) <- "cell_label"
-  }
-
-  list(
-    object = object_boot,
-    sampled_idx = sampled_idx,
-    source_cells = source_cells
-  )
-}
-
 run_bootstrap_once <- function(seed) {
   on.exit(gc(), add = TRUE)
   tryCatch({
@@ -1325,15 +968,19 @@ run_bootstrap_once <- function(seed) {
     seurat_obj_i <- RunPCA(seurat_obj_i, npcs = 10, seed.use = 42, verbose = FALSE)
     
     # 3. Refit the two manually specified lineages.
-    slingshot_res_i <- suppressWarnings(slingshot_manual(seurat_obj_i))
+    slingshot_res_i <- suppressWarnings(slingshot_manual(seurat_obj_i, lineage_cell_types))
     
     # 4. Re-bin raw counts by the newly inferred pseudotimes.
     res_L1_i <- bin_expression(
-      seurat_obj_i, slingshot_res_i$pseudotime,
+      seurat_obj_i, 
+      slingshot_res_i$pseudotime,
+      slingshot_res_i$branch_id,
       lineage = 1, n_bins = n_bins, prefix = "Fusiform"
     )
     res_L2_i <- bin_expression(
-      seurat_obj_i, slingshot_res_i$pseudotime,
+      seurat_obj_i, 
+      slingshot_res_i$pseudotime,
+      slingshot_res_i$branch_id,
       lineage = 2, n_bins = n_bins, prefix = "Ray"
     )
     pb_L1_i <- res_L1_i$Pseudobulk
@@ -1342,7 +989,11 @@ run_bootstrap_once <- function(seed) {
     comp_L2_i <- res_L2_i$Composition
 
     # 5. Re-identify middle-stage bins using the same fixed rule.
-    modules_i <- get_middle_module(pb_L2_i, ray_mid_markers$gene)
+    modules_i <- get_middle_module(
+      pb_L2_i, 
+      ray_mid_markers$gene, 
+      get_candidate_bins(comp_L2_i, c("XRP1", "XRP2"))
+    )
     
     # 6. Use the bootstrap-specific variable genes, as in the template.
     genes_i <- intersect(rownames(pb_L1_i), rownames(pb_L2_i))
@@ -1354,7 +1005,10 @@ run_bootstrap_once <- function(seed) {
       pb_L1_i[genes_i, , drop = FALSE], pb_L2_i[genes_i, , drop = FALSE],
       metrics = metric
     )
-    aligned_i <- align_similarity_matrix(similarity_i %>% t)
+    aligned_i <- align_similarity_matrix(
+      similarity_i %>% t,
+      ceiling(as.numeric(params$window_dtw) * max(dim(similarity_i)))
+    )
     alignment_mass_i <- alignment_label_mass(
       aligned = aligned_i,
       comp_query = comp_L2_i, comp_reference = comp_L1_i,
@@ -1398,7 +1052,8 @@ bootstrap_seeds <- sample.int(
 
 # register paralelle backend
 n_workers_boot <- get_n_workers(
-  n_tasks = n_bootstrap
+  n_tasks = n_bootstrap,
+  requested = params$n_parallel
 )
 cl_boot <- parallel::makeCluster(
   n_workers_boot
@@ -1423,15 +1078,6 @@ bootstrap_output <- tryCatch(
     foreach::foreach(
       seed = bootstrap_seeds,
       .inorder = FALSE,
-      .export = c(
-        "make_bootstrap_seurat", "slingshot_manual", "bin_expression",
-        "get_middle_module", "calculate_similarity",
-        "logcpm", "calculate_js_similarity", "align_similarity_matrix",
-        "extract_bin_id", "alignment_label_mass",
-        "composition_proportions", "hourglass_score", "seurat_obj",
-        "cluster_levels", "lineage_cell_types", "fusiform_lineage", "ray_lineage",
-        "n_bins", "metric", "params"
-      ),
       .packages = c(
         "Seurat",
         "slingshot",
@@ -1444,6 +1090,7 @@ bootstrap_output <- tryCatch(
       ),
       .options.snow = boot_progress$snow_options
     ) %dopar% {
+      source("notebooks/scripts/hourglass_analysis.R")
       run_bootstrap_once(seed)
     }
   },
@@ -1705,10 +1352,10 @@ key_data <- dplyr::bind_rows(
   bootstrap_key
 ) %>%
   dplyr::mutate(
-    sample_id = sample_metadata$sample_id,
-    individual_id = sample_metadata$individual_id,
-    condition = sample_metadata$condition,
-    batch = sample_metadata$batch,
+    sample_id = params$sample_id,
+    individual_id = params$sample_id,
+    condition = params$condition,
+    batch = params$biorep_id,
     metric = as.character(params$metric),
     M_minus_E = Middle - Early,
     M_minus_L = Middle - Late,
@@ -1786,10 +1433,10 @@ branch_key_summary <- scores_observed_ci %>%
 
 key_summary <- branch_key_summary %>%
   dplyr::mutate(
-    sample_id = sample_metadata$sample_id,
-    individual_id = sample_metadata$individual_id,
-    condition = sample_metadata$condition,
-    batch = sample_metadata$batch,
+    sample_id = params$sample_id,
+    individual_id = params$sample_id,
+    condition = params$condition,
+    batch = params$biorep_id,
     metric = as.character(params$metric),
     n_cells = ncol(seurat_obj),
     n_genes = length(genes),
