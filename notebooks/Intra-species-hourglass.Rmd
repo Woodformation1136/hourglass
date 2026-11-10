@@ -1,12 +1,12 @@
 ---
 title: "Intra-species hourglass analysis"
 params:
-  sample_id: tar_tenx_batch1
-  individual_id: tar_tenx_batch1
+  sample_id: ptr_tenx_batch1
+  individual_id: ptr_tenx_batch1
   condition: control
   batch: batch1
-  path_10x: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Tar3
-  path_cell_label: outputs/Hourglass/transfer_cell_label/tar_tenx_batch1/cell_label.csv
+  path_10x: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr
+  path_cell_label: outputs/Hourglass/transfer_cell_label/ptr_tenx_batch1/cell_label.csv
   path_fusiform_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Fusiform Early Precursor.csv
   path_ray_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Ray Precursor.csv
   # path_ray_early_markers: test/Hourglass/Consensus_cell_labelling_ptr/Ray Organizer.csv
@@ -22,10 +22,10 @@ params:
   open.begin: TRUE
   open.end: TRUE
   metric: spearman
-  path_key_data: test/Hourglass/intra_species_hourglass/tar_tenx_batch1/spearman/tar_tenx_batch1-spearman-key_data.csv
-  path_key_summary: test/Hourglass/intra_species_hourglass/tar_tenx_batch1/spearman/tar_tenx_batch1-spearman-key_summary.csv
-  path_image: test/Hourglass/intra_species_hourglass/tar_tenx_batch1/spearman/tar_tenx_batch1-spearman.rdata
-  path_debug_figure: test/Hourglass/intra_species_hourglass/debug_figure
+  path_key_data: test/Hourglass/intra_species_hourglass/ptr_tenx_batch1/spearman/ptr_tenx_batch1-spearman-key_data.csv
+  path_key_summary: test/Hourglass/intra_species_hourglass/ptr_tenx_batch1/spearman/ptr_tenx_batch1-spearman-key_summary.csv
+  path_image: test/Hourglass/intra_species_hourglass/ptr_tenx_batch1/spearman/ptr_tenx_batch1-spearman.rdata
+  path_debug_figure: test/Hourglass/intra_species_hourglass/debug_figure/ptr_tenx_batch1-spearman.png
 output:
   html_document:
     df_print: paged
@@ -1105,7 +1105,7 @@ stages <- factor(stages, levels = stages)
 data_plot <- data.frame(
     x = stages,
     ymin = apply(scores_perm[, stages], 2, quantile, 0.05, na.rm = TRUE),
-    y = apply(scores_perm[, stages], 2, median),
+    y = apply(scores_perm[, stages], 2, median, na.rm = TRUE),
     ymax = apply(scores_perm[, stages], 2, quantile, 0.95, na.rm = TRUE),
     group = "permutation"
   )
@@ -1221,9 +1221,7 @@ p_permutation_H <- ggplot(
   ) +
   theme_bw() +
   labs(
-    title = "Permutation hourglass score (%s permutations)" %>%
-      sprintf(params$n_permutation),
-    caption = sprintf("P = %s", permutation_results$p_empirical)
+    subtitle = sprintf("P = %.4f", permutation_results$p_empirical)
   )
 
 save_fig(
@@ -1538,7 +1536,7 @@ stages <- factor(stages, levels = stages)
 data_plot <- data.frame(
     x = stages,
     ymin = apply(scores_bootstrap[, stages], 2, quantile, 0.05, na.rm = TRUE),
-    y = apply(scores_bootstrap[, stages], 2, median),
+    y = apply(scores_bootstrap[, stages], 2, median, na.rm = TRUE),
     ymax = apply(scores_bootstrap[, stages], 2, quantile, 0.95, na.rm = TRUE),
     group = "bootstrap"
   )
@@ -1703,11 +1701,10 @@ p_bootstrap_H <- ggplot(
   ) +
   theme_bw() +
   labs(
-    x = "Bootstrap hourglass score",
-    y = "Number of bootstrap replicates",
-    title = "Cell-bootstrap distributions of the hourglass statistic (%s bootstraps)" %>%
-      sprintf(params$n_bootstrap),
-    subtitle = "Vertical lines indicate observed scores",
+    x = "Bootstrap H",
+    y = "Counts",
+    title = NULL,
+    subtitle = sprintf("Observed H: %.2f", scores_observed$H),
     caption = sprintf("CI: %.2f-%.2f", bootstrap_ci$H_ci_lower, bootstrap_ci$H_ci_upper)
   )
 
@@ -1957,19 +1954,22 @@ library(patchwork)
 p_large_patch <- wrap_plots(
   list(
     p_umap, 
-    p1 / p2,
+    p1,
+    p2,
     p_pt, 
     p_comp_lineage,
     p_comp, 
-    p_fuep_marker / p_ray_marker,
     p_path_L1,
+    
+    p_fuep_marker + labs(title = NULL, subtitle = "Middle marker"),
+    p_ray_marker + labs(title = NULL, subtitle = "Middle marker"),
     p_alinged_similarity1,
     p_perm_similarity,
     p_permutation_H,
     p_boot_similarity,
     p_bootstrap_H
   ),
-  nrow = 1
+  nrow = 2
 ) + 
   plot_layout(guides = "collect") & 
   theme(
@@ -1986,11 +1986,10 @@ p_large_patch <- wrap_plots(
 ggsave(
   p_large_patch,
   file = file.path(
-    params$path_debug_figure,
-    sprintf("%s-%s.png", params$sample_id, params$metric) 
+    params$path_debug_figure
   ),
-  height = 6,
-  width = 49,
+  height = 8,
+  width = 20,
   units = "in",
   dpi = 600
 )
