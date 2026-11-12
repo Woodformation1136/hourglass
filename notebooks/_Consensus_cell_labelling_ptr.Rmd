@@ -1,0 +1,543 @@
+---
+title: "Consensus cell labelling and orthogroup validation in Populus"
+author: ""
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+params:
+  sample_manifest: "outputs/Hourglass/cell_labelling/ptr/sample-manifest.csv"
+  orthogroup_table: "outputs/ortholog_info.csv"
+  defline_table: "references/Ptr/annotation/Ptrichocarpa_533_v4.1.defline.txt"
+  annot_info: "references/Ptr/annotation/Ptrichocarpa_533_v4.1.annotation_info.txt"
+  output_dir: "test/Hourglass/Consensus_cell_labelling_ptr"
+  reference_bio: "ptr_tenx_batch1"
+  cluster_name: "config/cell_label/ptr_tenx_batch1.csv"
+  prediction_score: 0.5
+  sc_marker_log2FC: 1.0
+  sc_marker_pct.1: 0.5
+  marker_top_n: 50
+---
+
+## Setup
+
+```{r Library}
+library(Seurat)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+```
+
+Params
+
+```{r}
+params
+```
+
+Create output directory
+
+```{r}
+dir.create(params$output_dir, recursive = TRUE)
+```
+
+Global variables
+
+```{r Params}
+cluster_levels <- c(
+  "Fiber",
+  "Vessel",
+  "Fusiform Early Precursor",
+  "Fusiform Organizer",
+  "Ray Organizer",
+  "Ray Precursor",
+  "Fusiform Intermediate Precursor",
+  "Ray"
+) # this is for fixing cluster levels on the plot
+fusiform_lineage <- c(
+  "Fusiform Organizer",
+  "Fusiform Early Precursor",
+  "Fusiform Intermediate Precursor",
+  "Vessel",
+  "Fiber"
+)
+ray_lineage <- c(
+  "Ray Organizer",
+  "Ray Precursor",
+  "Ray"
+)
+ordered_factor <- function(values) {
+  factor(
+    values,
+    levels = c(
+      intersect(cluster_levels, unique(values)), 
+      setdiff(unique(values), cluster_levels)
+    )
+  )
+}
+```
+
+Read tables
+
+```{r Read tables}
+# read sample info
+sample_manifest <- read.csv(params$sample_manifest)
+head(sample_manifest)
+```
+
+
+```{r Read tables}
+# reference cell cluster & cluster name mapping
+path_cell_cluster <- sample_manifest %>% 
+  filter(sample == params$reference_bio) %>%
+  select(path_10x) %>%
+  file.path(., "outs/analysis/clustering/kmeans_10_clusters/clusters.csv")
+cell_cluster <- read.csv(path_cell_cluster)
+cluster_name <- read.csv(params$cluster_name)
+cluster_name_vec <- cluster_name$new
+names(cluster_name_vec) <- cluster_name$old
+
+cell_cluster$Name <- cluster_name_vec[cell_cluster$Cluster]
+rownames(cell_cluster) <- cell_cluster$Barcode
+head(cell_cluster)
+```
+
+Read Defline
+
+```{r Read tables}
+foo <- read.table(
+  params$defline_table,
+  sep = "\t"
+)
+colnames(foo) <- c("transcript", "source", "description")
+defline <- tidyr::pivot_wider(
+    foo, 
+    names_from = source, 
+    values_from = description
+  ) %>% 
+  mutate(
+    gene = sub(".[0-9]$", ".v4.1", transcript)
+  )  
+head(defline)
+```
+
+Read annotation info
+
+```{r}
+annot_info <- read.table(
+  params$annot_info, 
+  sep = "\t"
+)
+colnames(annot_info) <- c(
+  "pacId", 
+  "locusName", 
+  "transcriptName", 
+  "peptideName", 
+  "Pfam", 
+  "Panther", 
+  "KOG", 
+  "ec", 
+  "KO", 
+  "GO", 
+  "best_arabi_gene", 
+  "best_arabi_defline"
+)
+annot_info %<>% mutate(gene = paste0(locusName, ".v4.1"))
+head(annot_info)
+```
+
+
+Get one-to-one orthologs
+
+```{r Read tables}
+# import orthogroups
+orth <- read.csv(params$orthogroup_table)
+
+# Keep complete memberships for the two focal species.
+focal_species <- c("PoT", "EuG", "LiC", "TrA")
+orth_focal <- orth %>%
+  dplyr::filter(
+    species_name %in% focal_species,
+  ) %>%
+  dplyr::distinct()
+
+# Count distinct loci contributed by each focal species.
+orth_copy_number <- orth_focal %>%
+  dplyr::count(
+    cluster_id,
+    species_name,
+    name = "n_loci"
+  ) %>%
+  tidyr::complete(
+    cluster_id,
+    species_name,
+    fill = list(n_loci = 0L)
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = species_name,
+    values_from = n_loci
+  )
+
+# Retain groups containing exactly one PoT locus and one EuG locus.
+single_copy_groups <- orth_copy_number[
+  matrixStats::rowAlls(orth_copy_number[, focal_species] == 1),
+  "cluster_id"
+]
+
+# One row per orthogroup, with the corresponding gene from each species.
+orth_single_copy <- orth_focal %>%
+  dplyr::semi_join(
+    single_copy_groups, 
+    by = "cluster_id"
+  ) %>%
+  tidyr::pivot_wider(
+    id_cols = cluster_id,
+    names_from = species_name,
+    values_from = gene_name
+  ) %>%
+  dplyr::arrange(
+    cluster_id
+  ) %>%
+  transmute(
+    cluster_id = cluster_id,
+    egr = EuG,
+    lch = LiC,
+    ptr = PoT,
+    tar = TrA
+  )
+
+head(orth_single_copy)
+```
+
+## Seurat preprocessing
+
+Load & Normalize data
+
+```{r Load and normalize data}
+seurat_obj_list <- apply(sample_manifest, 1, function(x){
+  sample_name <- x[[1]]
+  path_10x_h5 <- file.path(x[2], "outs/filtered_feature_bc_matrix.h5")
+  stopifnot(file.exists(path_10x_h5))
+  seurat_obj <- CreateSeuratObject(
+    Read10X_h5(path_10x_h5),
+    project = sample_name
+  )
+  seurat_obj <- NormalizeData(seurat_obj, verbose = FALSE)
+  seurat_obj <- FindVariableFeatures(seurat_obj, verbose = FALSE)
+  seurat_obj <- ScaleData(seurat_obj, verbose = FALSE)
+  seurat_obj <- RunPCA(seurat_obj, verbose = FALSE)
+  return(seurat_obj)
+})
+
+gc()
+names(seurat_obj_list) <- sample_manifest$sample
+seurat_obj_list
+```
+
+Import reference cell label
+
+```{r Import reference cell label}
+seurat_obj_list[[params$reference_bio]]$cell_label <-   
+  cell_cluster[Cells(seurat_obj_list[[params$reference_bio]]), "Name"]
+table(seurat_obj_list[[params$reference_bio]]$cell_label)
+```
+
+## Transfer cell label to each query
+
+```{r Transfer cell label}
+for (s in sample_manifest$sample) {
+  if (s == params$reference_bio) {
+    message("Skipping self")
+    next
+  } 
+  
+  # find transfer anchors
+  anchors <- FindTransferAnchors(
+    reference = seurat_obj_list[[params$reference_bio]], 
+    query = seurat_obj_list[[s]]
+  )
+
+  # transfer labels
+  predictions <- TransferData(
+    anchorset = anchors, 
+    refdata = seurat_obj_list[[params$reference_bio]]$cell_label
+  )
+  colnames(predictions) %<>% paste0("pre.", .)
+  seurat_obj_list[[s]] <- AddMetaData(object = seurat_obj_list[[s]], metadata = predictions)
+}
+```
+
+## Integrate samples
+
+Merge object
+
+```{r Merge object}
+query_names <- sample_manifest$sample[sample_manifest$sample != params$reference_bio]
+seurat_obj <- merge(
+  seurat_obj_list[[params$reference_bio]],
+  y = seurat_obj_list[query_names],
+  add.cell.id = c(params$reference_bio, query_names)
+)
+```
+
+Inspect prediction scores
+
+```{r Inspect prediction scores}
+data_plot <- data.frame(
+  score = seurat_obj$pre.prediction.score.max,
+  cell_label = factor(seurat_obj$pre.predicted.id, levels = cluster_levels)
+)
+ggplot(
+    data_plot,
+    aes(
+      x = score,
+      fill = cell_label
+    )
+  ) +
+  facet_wrap(~cell_label, ncol = 3) +
+  geom_histogram(
+    bins = 50,
+    position = position_stack()
+  ) +
+  scale_y_log10() +
+  scale_fill_brewer(palette = "Set1") +
+  geom_vline(
+    xintercept = params$prediction_score,
+    color = "red"
+  ) +
+  theme_bw()
+```
+
+Transfer predicted id where score max > `params$prediction_score`
+
+```{r Transfer predicted id}
+seurat_obj$is_ref <- ifelse(seurat_obj$orig.ident == params$reference_bio, "reference", "query")
+seurat_obj$cell_label[seurat_obj$is_ref == "query"] <- NA
+cell_confidently_annotated <- which(seurat_obj$pre.prediction.score.max > params$prediction_score)
+seurat_obj$cell_label[cell_confidently_annotated] <- seurat_obj$pre.predicted.id[cell_confidently_annotated]
+seurat_obj$cell_label <- ordered_factor(seurat_obj$cell_label)
+```
+
+Inspect cell type composition per sample
+
+```{r}
+cell_comp <- table(
+    seurat_obj$orig.ident,
+    seurat_obj$cell_label
+  ) %>% 
+  as.matrix %>%
+  sweep(., MARGIN = 1, rowSums(.), "/") %>% 
+  as.data.frame %>%
+  transmute(
+    sample = Var1,
+    cell_type = ordered_factor(Var2),
+    freq = Freq
+  )
+
+p_cell_type_comp <- ggplot(
+  cell_comp,
+  aes(
+    x = sample, 
+    y = freq,
+    fill = cell_type
+  )
+) +
+  geom_col(position = "fill") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+p_cell_type_comp
+```
+
+Visualize before integration
+
+```{r Visualize before integration}
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj)
+seurat_obj <- ScaleData(seurat_obj)
+seurat_obj <- RunPCA(seurat_obj)
+seurat_obj <- RunUMAP(
+  seurat_obj, 
+  reduction = "pca", 
+  dims = 1:30
+)
+p_umap_pre <- DimPlot(
+    seurat_obj, 
+    group.by = "cell_label",
+    split.by = "is_ref"
+  ) + 
+  scale_color_brewer(
+    palette = "Set1"
+  ) + 
+  theme_void()
+
+p_umap_pre
+```
+
+Integration
+
+```{r Integration}
+seurat_obj <- IntegrateLayers(
+  seurat_obj, 
+  method = CCAIntegration, 
+  orig.reduction = "pca",
+  new.reduction = "integrated.cca", 
+  verbose = FALSE
+)
+merged_obj <- JoinLayers(seurat_obj)
+```
+
+Visualize after integration
+
+```{r Visualize after integration}
+seurat_obj <- RunUMAP(
+  seurat_obj, 
+  dims = 1:30, 
+  reduction = "integrated.cca",
+  reduction.name = "integrated.umap"
+)
+p_umap_intergrated <- DimPlot(
+    seurat_obj, 
+    reduction = "integrated.umap",
+    group.by = "cell_label",
+    split.by = "is_ref"
+  ) + 
+  scale_color_brewer(
+    palette = "Set1"
+  ) + 
+  theme_void()
+
+p_umap_intergrated
+```
+
+## Identify cell type marker genes
+
+Import the helper script
+
+```{r}
+source("notebooks/scripts/Pairwise-marker-curation.R")
+```
+
+Define the function for calling Seurat::DotPlot
+
+```{r}
+plot_orthomarkers <- function(
+    obj,
+    genes, 
+    target,
+    by_sample = TRUE,
+    page = 1L, 
+    genes_per_page = 25L
+  ) {
+  if (length(genes) == 0L) {
+    stop("No available markers for: ", target)
+  }
+
+  n_pages <- ceiling(length(genes) / genes_per_page)
+  if (page < 1L || page > n_pages) {
+    stop("page must be between 1 and ", n_pages)
+  }
+
+  # Paginate only for display; no additional marker filtering.
+  index <- seq.int(
+    (page - 1L) * genes_per_page + 1L,
+    min(page * genes_per_page, length(genes))
+  )
+  
+  Idents(obj) <- rep("plot", ncol(obj))
+  obj$cell_label <- factor(obj$cell_label, levels = c(fusiform_lineage, ray_lineage))
+  DotPlot(
+    object = obj,
+    assay = "RNA",
+    features = genes[index],
+    group.by = "cell_label",
+    split.by = if (by_sample) "orig.ident" else NULL,
+    cols = "Blues",
+    scale = TRUE,
+    dot.min = 0
+  ) +
+    scale_color_gradientn(
+      colours = c("grey95", "#9ecae1", "#3182bd", "#08519c")
+    ) +
+    RotatedAxis() +
+    labs(
+      title = paste0(
+        target, " markers — page ", page, "/", n_pages
+      ),
+      x = NULL,
+      y = if (by_sample) "Transferred label × sample" else "Transferred label",
+      colour = "log1p(mean\nnormalized expression)"
+    )
+}
+```
+
+Find cluster markers by pairwise comparison
+
+```{r}
+pw <- pairwise_cluster_markers(
+  merged_obj,
+  label_col = "cell_label"
+)
+
+saveRDS(pw, "pairwise-cluster-markers.rds")
+```
+
+### Extract cluster candidate marker genes
+
+```{r}
+for (target in c(fusiform_lineage, ray_lineage)) {
+  rp <- inspect_marker_overlap(
+    pw,
+    target = target,
+    min_log2fc = 1,
+    min_target_pct = 0.25,
+    alpha = 0.05,
+    top_n = 3
+  )
+  rp$coverage       # Number of passing genes against each competing label
+  rp$overlap        # Overlap between the pairwise marker sets
+  rp$intersection   # Genes passing against EVERY other label
+  rp$membership     # Which comparisons each candidate passes
+  
+  # plot expression
+  if (nrow(rp$candidates) > 0L) {
+    p <- plot_orthomarkers(
+      merged_obj,
+      rp$candidates[["gene"]],
+      target,
+      page = 1,
+      genes_per_page = 30,
+      by_sample = TRUE
+    )
+    ggsave(
+      filename = file.path(params$output_dir, sprintf("%s.png", target)),
+      plot = p,
+      units = "in",
+      height = 14,
+      width = 6 + nrow(rp$candidates) / 3,
+      dpi = 600
+    )
+  }
+  
+  # output candidates
+  candidate_out <- left_join(rp$candidates, annot_info, by = "gene")
+  write.csv(
+    candidate_out,
+    file.path(params$output_dir, sprintf("%s.csv", target)),
+    row.names = FALSE
+  )
+}
+```
+
+Export SeuratObject
+
+```{r}
+saveRDS(merged_obj, file.path(params$output_dir, "merged_obj.rds"))
+```
+
