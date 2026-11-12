@@ -317,7 +317,7 @@ p_cluster_2
 Proportion of cells in each lineage
 
 ```{r}
-composition <- rbind(
+composition_raw <- rbind(
   transform(as.data.frame(table(seurat_obj_1$cell_label)[lineage_cell_types$Lineage1]), sample_id = params$sample_id_1),
   transform(as.data.frame(table(seurat_obj_2$cell_label)[lineage_cell_types$Lineage1]), sample_id = params$sample_id_2)
 ) %>% mutate(
@@ -325,7 +325,7 @@ composition <- rbind(
 )
 
 p_comp_lineage <- ggplot(
-  composition, 
+  composition_raw, 
   aes(x = sample_id, y = Freq, fill = cell_type)
 ) +
   geom_col(position = "fill") +
@@ -899,7 +899,7 @@ scores_observed
 n_permutation <- as.integer(params$n_permutation)
 metric <- as.character(params$metric)
 
-set.seed(42)
+set.seed(seed_from_id(params$sample_id_2))
 permutation_seeds <- sample.int(.Machine$integer.max, n_permutation, replace = FALSE)
 n_workers_perm <- get_n_workers(n_permutation, params$n_parallel)
 message("Running ", n_permutation, " permutations on ", n_workers_perm, " workers.")
@@ -1251,7 +1251,7 @@ n_bins <- as.integer(params$n_bins)
 metric <- as.character(params$metric)
 
 # get bootstrap seeds
-set.seed(42)
+set.seed(seed_from_id(params$sample_id_2) + 1L)
 bootstrap_seeds <- sample.int(
   n = .Machine$integer.max,
   size = n_bootstrap,
@@ -1853,13 +1853,13 @@ p_large_patch <- wrap_plots(
     plot.background = element_blank()
   )
   
-dir.create(params$path_debug_figure, recursive = TRUE)
+dir.create(
+  dirname(params$path_debug_figure), 
+  recursive = TRUE
+)
 ggsave(
   p_large_patch,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("%s-%s.png", params$sample_id_2, params$metric) 
-  ),
+  file = params$path_debug_figure,
   height = 8,
   width = 20,
   units = "in",

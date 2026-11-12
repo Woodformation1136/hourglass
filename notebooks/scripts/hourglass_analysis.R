@@ -3,9 +3,26 @@ suppressPackageStartupMessages({
   library(slingshot)
   library(dtw)
   library(Seurat)
+  library(dplyr)
 })
 
-# Preprocessing
+# General purpose
+# ------------------------------------------------------------------------------
+save_fig <- function(
+  plot,
+  file,
+  width,
+  height
+) {
+  svg(file, width = width, height = height)
+  print(plot)
+  dev.off()
+}
+
+seed_from_id <- function(sample_id) {
+  digest::digest2int(enc2utf8(sample_id), seed = 42L)
+}
+# Pre-processing
 # ------------------------------------------------------------------------------
 # import cell label
 import_cell_label <- function(
@@ -74,12 +91,14 @@ calculate_js_similarity <- function(mat1, mat2) {
 
 # Calculate pairwise similarity between pseudobulk profiles
 # Available metrics are: `spearman`, `pearson`, and `Jensen-Shannon`
-calculate_similarity <- function(mat1, mat2, metrics) {
+calculate_similarity <- function(mat1, mat2, metrics, norm_func = logcpm) {
   stopifnot(metrics %in% c("spearman", "pearson", "Jensen-Shannon"))
+  mat1 <- as.matrix(mat1)
+  mat2 <- as.matrix(mat2)
   if (metrics %in% c("spearman", "pearson")) {
     cor(
-      x = logcpm(mat1),
-      y = logcpm(mat2),
+      x = norm_func(mat1),
+      y = norm_func(mat2),
       method = metrics
     )
   } else if (metrics == "Jensen-Shannon") {
@@ -97,10 +116,8 @@ slingshot_manual <- function(seurat_obj, lineage_cell_types) {
   lineages <- new("SlingshotDataSet")
   
   # add cell embedding
-  lineages@reducedDim <- seurat_obj %>% 
-    Embeddings(reduction = "pca") %>% 
-    extract(1:dim(seurat_obj)[2], 1:10) %>%
-    as.matrix
+  emb <- Embeddings(seurat_obj, reduction = "pca") #[, 1:10]
+  lineages@reducedDim <- as.matrix(emb)
   
   # add cluster matrix
   clusters <- seurat_obj$cell_label # factor
@@ -150,6 +167,46 @@ slingshot_manual <- function(seurat_obj, lineage_cell_types) {
     )
   )
 }
+
+slingshot_manual_assign_start <- function(seurat_obj, lineage_cell_types) {
+  sce_list <- list()
+  pseudotime <- matrix(
+    data = NA,
+    nrow = length(Cells(seurat_obj)),
+    ncol = length(lineage_cell_types)
+  )
+  branch_id <- rep(0, length(Cells(seurat_obj)))
+  rownames(pseudotime) <- Cells(seurat_obj)
+  names(branch_id) <- Cells(seurat_obj)
+  for (L_i in seq_along(lineage_cell_types)) {
+    sce_Li <- as.SingleCellExperiment(
+      subset(seurat_obj, cell_label %in% lineage_cell_types[[L_i]])
+    )
+    len_L_i <- length(lineage_cell_types[[L_i]])
+    sce_Li <- slingshot(
+      sce_Li,
+      clusterLabels = "cell_label",
+      reducedDim = "PCA",
+      start.clus = lineage_cell_types[[L_i]][1],
+      end.clus = lineage_cell_types[[L_i]][len_L_i]
+    )
+    
+    # record results
+    sce_list[[L_i]] <- sce_Li
+    pseudotime[Cells(sce_Li), L_i] <- sce_Li$slingPseudotime_1
+    branch_id[Cells(sce_Li)] <- L_i
+  }
+  branch_id <- factor(branch_id, levels = seq_along(lineage_cell_types))
+  
+  return(
+    list(
+      SlingshotDataSet = sapply(sce_list, as.SlingshotDataSet),
+      pseudotime = pseudotime,
+      branch_id = branch_id
+    )
+  )
+}
+
 # ------------------------------------------------------------------------------
 
 # Bin expression by pseudotime
@@ -160,6 +217,7 @@ bin_expression <- function(
     branch_id, 
     lineage,
     exclude = c(),
+    exclude_gene = c(),
     prefix, 
     n_bins
 ) {
@@ -175,8 +233,8 @@ bin_expression <- function(
   bins <- cut(
     pt, 
     breaks = seq(
-      min(pt),
-      max(pt),
+      min(pt, na.rm =TRUE),
+      max(pt, na.rm =TRUE),
       length.out = n_bins + 1    
     ),
     # breaks = quantile(
@@ -193,8 +251,27 @@ bin_expression <- function(
   obj$bin <- sprintf("%s-%02d", prefix, bins[colnames(obj)])
   
   # aggregate pseudotime
-  pb <- AggregateExpression(obj, assays = "RNA", group.by = "bin")$RNA
+  pb <- AggregateExpression(
+    obj,
+    features = setdiff(rownames(obj), exclude_gene),
+    assays = "RNA", 
+    group.by = "bin"
+  )$RNA
   pb <- pb[, order(colnames(pb)), drop = FALSE]
+  
+  # # report cell label composition by bins
+  # comp <- table(
+  #   bin = factor(obj$bin, levels = sprintf("%s-%02d", prefix, 1:n_bins)),
+  #   cell_type = seurat_obj$cell_label[keep]
+  # )
+  # 
+  # # retain only bins with number of cells > min_cells
+  # bin_names <- sprintf("%s-%02d", prefix, 1:n_bins)
+  # passed_bin <- bin_names[rowSums(comp) > min_cells]
+  # pb <- pb[, passed_bin]
+  # comp <- comp[passed_bin, ]
+  # 
+  # return(list(Pseudobulk = pb, Composition = comp))
   
   # report cell label composition by bins
   comp <- table(
@@ -213,7 +290,9 @@ get_markers <- function(orthogroup, ptr_genes, sample_id) {
     cid <- orthogroup %>% 
       dplyr::filter(gene_name %in% ptr_genes) %>%
       dplyr::pull(cluster_id)
-    
+    if (sample_id == "orthogroup") {
+      return(cid)
+    }
     # get species gene id
     species_marker <- orthogroup %>%
       dplyr::filter(
@@ -240,11 +319,13 @@ get_marker_profile <- function(pb_mat, marker, norm_func = logcpm) {
     norm_func(pb_mat)[marker, , drop = FALSE]
   )
 }
-get_candidate_bins <- function(comp, cell_type, threshold = 0.5) {
+get_cell_proportion <- function(comp, cell_type) {
   cell_type <- c(cell_type)
   prop <- sweep(comp, 1, rowSums(comp), "/")
-  prop_target <- rowSums(prop[, cell_type, drop = FALSE])
-  print(prop_target)
+  return(rowSums(prop[, cell_type, drop = FALSE]))
+}
+get_candidate_bins <- function(comp, cell_type, threshold = 0.5) {
+  prop_target <- get_cell_proportion(comp, cell_type)
   candidate_bins <- which(prop_target > threshold, useNames = FALSE)
   if (!any(candidate_bins)) {
     return(which(prop_target > 0, useNames = FALSE))
@@ -253,6 +334,39 @@ get_candidate_bins <- function(comp, cell_type, threshold = 0.5) {
   }
 }
 get_middle_module <- function(
+  pb_mat,
+  comp,
+  cell_types,
+  cell_type_marker,
+  weight_by_prop = TRUE,
+  n_bins = 3,
+  norm_func = logcpm
+) {
+  # get marker gene profile
+  marker_profile <- get_marker_profile(pb_mat, cell_type_marker, norm_func)
+  col_idx <- extract_bin_id(colnames(pb_mat)) %>% as.integer
+  cell_proportion <- get_cell_proportion(comp[col_idx, ], cell_types)
+  if (weight_by_prop) {
+    marker_profile <- marker_profile * cell_proportion
+  }
+  
+  # find a length `n_bins` window that achieve the highest weighted marker gene expression
+  rolling_sums <- zoo::rollsum(marker_profile, k = n_bins, align = "left")
+  max_start_idx <- which.max(rolling_sums)
+  middle <- seq.int(max_start_idx, max_start_idx + n_bins - 1)
+
+  # split bins into stages
+  bins <- seq_len(ncol(pb_mat))
+  group <- ifelse(
+    bins < min(middle), "early", ifelse(
+      bins > max(middle), "late", "middle"
+    )
+  )
+  stages <- split(bins, group)
+  return(stages[c("early", "middle", "late")])
+}
+
+get_middle_module_1 <- function(
   pb_mat, 
   marker,
   candidate_index,
@@ -274,9 +388,9 @@ get_middle_module <- function(
   }
   return(
     list(
-      early = 1:(middle_peak-2),
-      middle = (middle_peak-1):(middle_peak+1),
-      late = (middle_peak+2):ncol(pb_mat)
+      early = 1:max(middle_peak-3, 1),
+      middle = (middle_peak-2):(middle_peak),
+      late = min(middle_peak+1, ncol(pb_mat)):ncol(pb_mat)
     )
   )
 }
@@ -286,7 +400,9 @@ get_middle_module <- function(
 # ------------------------------------------------------------------------------
 align_similarity_matrix <- function(
     similarity,
-    window_size
+    window_size,
+    open.begin = FALSE,
+    open.end = TRUE
 ) {
   local_cost <- 1 - similarity
   fit <- dtw(
@@ -295,7 +411,7 @@ align_similarity_matrix <- function(
     step.pattern = dtw::asymmetric, # Each ray bin is matched exactly once.
     window.type = "slantedband",
     window.size = window_size,
-    open.begin = TRUE,
+    open.begin = FALSE,
     open.end = TRUE,
     keep.internals = TRUE,
     distance.only = FALSE
@@ -382,15 +498,62 @@ alignment_label_mass <- function(
 
 # Calculate hourglass score
 # ------------------------------------------------------------------------------
-hourglass_score <- function(S, modules) {
-  E <- mean(S[modules$early], na.rm = TRUE)
-  M <- mean(S[modules$middle], na.rm = TRUE)
-  L <- mean(S[modules$late], na.rm = TRUE)
-  c(
-    Early = E,
-    Middle = M,
-    Late = L,
-    H = min(M - E, M - L)
+hourglass_score <- function(aligned_path_df, modules, method = "mean") {
+  method <- match.arg(
+    gsub("\u2013", "-", method, fixed = TRUE),
+    choices = c("mean", "Hodges-Lehmann", "prob", "max")
+  )
+  
+  # 
+  early <- aligned_path_df %>% 
+    filter(L1_i %in% modules$early) %>%
+    pull(similarity)
+  mid <- aligned_path_df %>% 
+    filter(L1_i %in% modules$middle) %>%
+    pull(similarity)
+  late <- aligned_path_df %>% 
+    filter(L1_i %in% modules$late) %>%
+    pull(similarity)
+  
+  #
+  E <- mean(early, na.rm = TRUE)
+  M <- mean(mid, na.rm = TRUE)
+  L <- mean(late, na.rm = TRUE)
+  
+  #
+  D_ME <- outer(mid, early, "-")
+  D_ML <- outer(mid, late, "-")
+  
+  contrast <- switch(
+    method,
+    mean = c(M - E, M - L),
+    `Hodges-Lehmann` = c(
+      median(D_ME, na.rm = TRUE),
+      median(D_ML, na.rm = TRUE)
+    ),
+    prob = c(
+      mean(D_ME > 0, na.rm = TRUE) + 0.5 * mean(D_ME == 0, na.rm = TRUE),
+      mean(D_ML > 0, na.rm = TRUE) + 0.5 * mean(D_ML == 0, na.rm = TRUE)
+    ),
+    # Retained only for comparison; not recommended as the main score.
+    max = c(
+      max(D_ME, na.rm = TRUE),
+      max(D_ML, na.rm = TRUE)
+    )
+  )
+  
+  return(
+    c(
+      Early = E,
+      Middle = M,
+      Late = L,
+      H = min(contrast),
+      M_vs_E = unname(contrast[1]),
+      M_vs_L = unname(contrast[2]),
+      n_early = length(early),
+      n_middle = length(mid),
+      n_late = length(late)
+    )
   )
 }
 # ------------------------------------------------------------------------------

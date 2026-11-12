@@ -153,7 +153,10 @@
             "sample_names": "TAR",
             "fastq_path": [
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Trochodendron_aralioides/rawData"
-            ]
+            ],
+            "results_old": {
+              "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Tar3/"
+            }
         },
         {
             "name": "tar_nextseq_batch1",
@@ -172,7 +175,10 @@
             "platform": "nextseq",
             "species": "tar",
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Tar_batch2",
-            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt"
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar2"
+            }
         },
         {
             "name": "lch_tenx_batch1",

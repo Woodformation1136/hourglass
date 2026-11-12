@@ -1,7 +1,7 @@
 ---
 title: "Inter-species hourglass summary"
 params:
-  key_data: null
+  path_filenames: null              # One key_data CSV path per line (filenames.txt).
   path_summary: null
   analysis_id: null
   metrics: !r c("spearman", "pearson", "Jensen-Shannon")
@@ -13,6 +13,8 @@ params:
   shared_query_mode: "bonferroni"       # bonferroni | error | synchronized
   adjust_method: "holm"
   alpha: 0.05
+  bootstrap_interval_level: 0.90       # Diagnostic interval from saved bootstrap H.
+  diagnostic_plots: true               # Individual effects and mean-H null histograms.
 output:
   html_document:
     df_print: paged
@@ -52,6 +54,23 @@ all ordered species-pair × metric × comparison tests. For a permutation test i
 is identical to `p_joint`. A group rejection is evidence against all its component
 nulls being true, not proof that every pair or species has an hourglass effect.
 
+
+**For mean-H tests, the statistic is unchanged:** both the observed statistic and every joint-null
+statistic are arithmetic means across the same inputs. Null scores are **not**
+concatenated across inputs. One row of `joint_null.csv` represents one joint
+randomized configuration, not one input or one biological replicate. The null
+standard deviation is not an estimate of between-plant variation.
+
+Inference remains conditional on the specified upstream randomized-pseudotime
+null and any trajectories, feature sets, and stage definitions held fixed.
+A numerical audit does not establish exchangeability or validate those upstream
+choices. Rejection is not a claim that every sample has an effect.
+
+Input filenames are read from `params$path_filenames` (one CSV path per line).
+The Snakemake rule writes an absolute-path manifest before rendering. For interactive
+Rmd debugging, provide your own manifest and set `path_filenames`, `path_summary`,
+and the required analysis identifiers through `params`.
+
 ## Setup
 
 ```{r Setup}
@@ -87,14 +106,29 @@ bind_fill <- function(xs) {
 }
 key <- function(d) paste(d$sample_id, d$metric, d$comparison, sep = "\r")
 
-files <- text_vector(params$key_data)
+read_filename_manifest <- function(path) {
+  if (!scalar_text(path) || !file.exists(path)) {
+    fail("Set params$path_filenames to an existing filenames.txt manifest.")
+  }
+  paths <- readLines(path, warn = FALSE)
+  paths <- paths[nzchar(paths)]
+  if (!length(paths)) fail("The filenames.txt manifest is empty: ", path)
+  missing <- paths[!file.exists(paths)]
+  if (length(missing)) {
+    fail("Files listed in filenames.txt do not exist: ",
+         paste(utils::head(missing, 5L), collapse = ", "))
+  }
+  paths <- normalizePath(paths, mustWork = TRUE)
+  if (anyDuplicated(paths)) fail("Duplicate paths in filenames.txt: ", path)
+  paths
+}
+
+files <- read_filename_manifest(params$path_filenames)
 metrics_keep <- text_vector(params$metrics)
 comparisons_keep <- text_vector(params$comparisons)
-if (!length(files) || anyNA(files) || any(!file.exists(files))) {
-  fail("Set key_data to existing CSV files.")
-}
-files <- normalizePath(files, mustWork = TRUE)
-if (anyDuplicated(files)) fail("Duplicate input paths.")
+# The manifest is read directly in this notebook; no command-line parsing.
+message("Loaded ", length(files), " key_data CSV files from: ",
+        normalizePath(params$path_filenames, mustWork = TRUE))
 if (!scalar_text(params$path_summary) || !scalar_text(params$analysis_id)) {
   fail("Set path_summary and analysis_id to nonempty strings.")
 }
@@ -236,6 +270,141 @@ if (!scalar_text(params$shared_query_mode) ||
 }
 sidecars <- file.path(outdir, c("pair_summary.csv", "joint_null.csv", "audit.csv"))
 if (path_summary %in% c(files, sidecars) || any(sidecars %in% files)) fail("Conflicting output paths.")
+
+# Diagnostics only: none of these functions changes the observed/permuted test.
+if (!is.numeric(params$bootstrap_interval_level) ||
+    length(params$bootstrap_interval_level) != 1L ||
+    !is.finite(params$bootstrap_interval_level) ||
+    params$bootstrap_interval_level <= 0 || params$bootstrap_interval_level >= 1) {
+  fail("bootstrap_interval_level must be between 0 and 1.")
+}
+if (!is.logical(params$diagnostic_plots) || length(params$diagnostic_plots) != 1L ||
+    is.na(params$diagnostic_plots)) fail("diagnostic_plots must be TRUE or FALSE.")
+
+# Read the saved bootstrap H values separately; NEVER put them in the null matrix.
+add_component_diagnostics <- function(tab, group_columns, unit_column) {
+  raw <- lapply(files, function(path) {
+    read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  })
+  ids <- paste(tab$sample_id, tab$metric, tab$comparison, sep = "\r")
+  stopifnot(!anyDuplicated(ids))
+  prob <- c((1 - params$bootstrap_interval_level) / 2,
+            (1 + params$bootstrap_interval_level) / 2)
+  diagnostics <- lapply(seq_len(nrow(tab)), function(i) {
+    j <- match(tab$source_file[i], files)
+    if (is.na(j)) fail("Diagnostic source file is absent from the input list.")
+    d <- raw[[j]]
+    same <- d$sample_id == tab$sample_id[i] & d$metric == tab$metric[i] &
+      d$comparison == tab$comparison[i]
+    o <- d[which(same & d$data_type == "observed"), , drop = FALSE]
+    b <- d[which(same & d$data_type == "bootstrap"), , drop = FALSE]
+    stopifnot(nrow(o) == 1L)
+    if (nrow(b) && (anyNA(b$replicate_id) || any(!nzchar(b$replicate_id)) ||
+                   anyDuplicated(b$replicate_id))) {
+      fail(tab$sample_id[i], ": missing/duplicate bootstrap IDs.")
+    }
+    if (nrow(b) && !is.numeric(b$H)) fail("Non-numeric saved bootstrap H values.")
+    h <- b$H[is.finite(b$H)]
+    interval <- if (length(h) >= 2L) {
+      unname(stats::quantile(h, probs = prob, type = 7))
+    } else c(NA_real_, NA_real_)
+    reported <- function(name) {
+      if (!name %in% names(o)) return(NA_real_)
+      value <- suppressWarnings(as.numeric(o[[name]]))
+      if (length(value) != 1L || !is.finite(value)) return(NA_real_)
+      value
+    }
+    valid_reported <- reported("n_bootstrap_valid")
+    metadata_ok <- if (is.na(valid_reported)) NA else valid_reported == length(h)
+    data.frame(
+      bootstrap_n_saved = nrow(b), bootstrap_n_finite = length(h),
+      bootstrap_n_nonfinite = nrow(b) - length(h),
+      bootstrap_n_requested_reported = reported("n_bootstrap_requested"),
+      bootstrap_n_valid_reported = valid_reported,
+      bootstrap_n_failed_reported = reported("n_bootstrap_failed"),
+      bootstrap_metadata_ok = metadata_ok,
+      bootstrap_status = if (!nrow(b)) "not_available" else if (length(h) < 2L) {
+        "too_few_finite_draws"
+      } else if (isFALSE(metadata_ok)) "metadata_mismatch" else "available",
+      bootstrap_interval_level = params$bootstrap_interval_level,
+      H_bootstrap_median = if (length(h)) stats::median(h) else NA_real_,
+      H_bootstrap_lower = interval[1], H_bootstrap_upper = interval[2],
+      uncertainty_scope = "within_input_resampling_not_between_individuals",
+      row.names = NULL
+    )
+  })
+  tab <- cbind(tab, do.call(rbind, diagnostics))
+  if (any(tab$bootstrap_status == "metadata_mismatch")) {
+    warning("Saved bootstrap counts differ from declared n_bootstrap_valid; inspect component diagnostics.",
+            call. = FALSE)
+  }
+  # Descriptive influence check, not another hypothesis test. For inter-species
+  # pairs, remove ALL rows involving the same randomized biological individual.
+  tab$loo_unit <- as.character(tab[[unit_column]])
+  tab$mean_H_without_unit <- NA_real_
+  groups <- do.call(paste, c(tab[group_columns], sep = "\r"))
+  for (index in split(seq_len(nrow(tab)), groups)) {
+    for (i in index) {
+      retained <- index[tab$loo_unit[index] != tab$loo_unit[i]]
+      if (length(retained)) tab$mean_H_without_unit[i] <- mean(tab$H_observed[retained])
+    }
+  }
+  tab
+}
+
+# Separate plots for each test; intervals are within-input bootstrap percentiles,
+# not a confidence interval for the species-wide or population-average effect.
+plot_component_effects <- function(tab, group_columns, label_columns) {
+  old <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old), add = TRUE)
+  groups <- do.call(paste, c(tab[group_columns], sep = " | "))
+  for (label in unique(groups)) {
+    d <- tab[groups == label, , drop = FALSE]
+    labels <- do.call(paste, c(d[label_columns], sep = " vs "))
+    y <- rev(seq_len(nrow(d)))
+    xr <- range(c(0, d$H_observed, d$H_bootstrap_lower, d$H_bootstrap_upper),
+                finite = TRUE)
+    padding <- max(diff(xr) * 0.08, 0.01)
+    graphics::par(mar = c(4.2, 15, 3.5, 1))
+    graphics::plot(d$H_observed, y, xlim = xr + c(-padding, padding),
+                   ylim = c(0.5, nrow(d) + 0.5), pch = 19, yaxt = "n",
+                   ylab = "", xlab = "Observed hourglass score H", main = label)
+    graphics::axis(2, at = y, labels = labels, las = 1, cex.axis = 0.7)
+    valid <- is.finite(d$H_bootstrap_lower) & is.finite(d$H_bootstrap_upper)
+    graphics::segments(d$H_bootstrap_lower[valid], y[valid],
+                       d$H_bootstrap_upper[valid], y[valid])
+    graphics::abline(v = 0, lty = 3)
+    graphics::mtext(sprintf("Bars: %.0f%% within-input bootstrap percentile intervals; no bar when unavailable",
+                            100 * params$bootstrap_interval_level),
+                    side = 1, line = 3, cex = 0.7)
+  }
+  invisible(NULL)
+}
+plot_mean_nulls <- function(summary, null, group_columns) {
+  old <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old), add = TRUE)
+  for (i in seq_len(nrow(summary))) {
+    s <- summary[i, , drop = FALSE]
+    keep <- rep(TRUE, nrow(null))
+    for (nm in group_columns) keep <- keep & null[[nm]] == s[[nm]]
+    x <- null$mean_H_null[keep]
+    label <- paste(unlist(s[group_columns], use.names = FALSE), collapse = " | ")
+    if (!length(x)) {
+      message(label, ": no mean-H null; inspect p_method and p_group.")
+      next
+    }
+    graphics::par(mar = c(4.5, 4.2, 4, 1))
+    graphics::hist(x, breaks = "FD", xlim = range(c(x, s$mean_H)),
+                   main = label, xlab = "Mean H across inputs in ONE joint permutation",
+                   ylab = "Joint permutations")
+    graphics::abline(v = s$mean_H, lwd = 2)
+    graphics::mtext(sprintf("Observed mean H = %.4f; B = %d; exceedances = %d; P = %.4g; adjusted P = %.4g",
+                            s$mean_H, s$n_joint_permutation, s$n_null_ge_observed,
+                            s$p_joint, s$p_adjusted), side = 3, line = 0.3, cex = 0.7)
+  }
+  invisible(NULL)
+}
+
 params
 ```
 
@@ -288,6 +457,9 @@ if (anyDuplicated(all_samples$sample)) fail("Inconsistent biological metadata fo
 components <- validate_components(scores, pair_metadata$sample_id, comparisons_keep)
 pair_summary <- component_summary(components)
 pair_summary$analysis_id <- params$analysis_id
+pair_summary <- add_component_diagnostics(
+  pair_summary, c("species_pair", "metric", "comparison"), "randomized_individual"
+)
 pair_metadata[c("sample_id_1", "sample_id_2", "species_pair",
                 "randomized_individual", "fixed_individual")]
 ```
@@ -334,7 +506,9 @@ results <- lapply(seq_len(nrow(tests)), function(i) {
     n_randomized_individuals = length(unique(pm$randomized_individual)),
     n_fixed_individuals = length(unique(pm$fixed_individual)),
     reused_randomized_individual = reused_query,
+    n_randomization_units = length(unique(pm$randomized_individual)),
     mean_H = mean(H), median_H = median(H), min_H = min(H), max_H = max(H),
+    sd_H = if (length(H) > 1L) sd(H) else NA_real_,
     n_positive_H = sum(H > 0), fraction_positive_H = mean(H > 0)
   ))
   d <- scores[scores$species_pair == test$species_pair & scores$metric == test$metric &
@@ -453,12 +627,56 @@ The summary does not estimate population-average effects. Stage definitions,
 actual shuffle synchronization, pair-specific gene selection, and biological
 replicate independence must be checked in the upstream analyses.
 
-## Pair-level diagnostics and audit
+
+## Individual effects and uncertainty
+
+Dots show **observed H**. Bars use the central `bootstrap_interval_level`
+percentile interval of the **saved, finite bootstrap H values for that input**
+(default 90%; type-7 quantiles). Missing bootstrap draws are reported, not replaced.
+These are within-input resampling intervals, **not between-plant uncertainty**,
+not species-pair confidence intervals, and not evidence that spatial dependence
+was handled upstream. Bootstrap intervals do not determine any permutation P value.
+`bootstrap_n_*` columns distinguish saved, finite, and declared counts. Intervals
+are conditional on usable draws; missing H values or failed resamples can affect
+their interpretation. They do not by themselves establish nominal coverage.
+
+`mean_H_without_unit` is a **descriptive** leave-one-unit-out mean, without a P value
+or an additional significance flag. It is `NA` when no other unit remains.
+Negative and nonsignificant observed scores are retained. Component P values are
+unadjusted diagnostics, not the inputs to the group test.
+
+For inter-species results the omitted unit is the **randomized biological
+individual**: all its pairs are omitted together, not one pair at a time. With a
+single reused Lch individual this diagnostic is `NA`; multiple references do not
+create independent Lch replicates. Pair-level intervals are not combined across
+shared individuals.
 
 ```{r Pair summary}
 pair_summary[c("sample_id_1", "sample_id_2", "metric", "comparison", "H_observed",
-               "n_permutation", "n_null_ge_observed", "p_empirical")]
+               "H_bootstrap_lower", "H_bootstrap_upper", "bootstrap_n_finite",
+               "bootstrap_status", "mean_H_without_unit", "p_empirical")]
 ```
+
+```{r Pair effect plots, fig.width=12, fig.height=6}
+if (params$diagnostic_plots) {
+  plot_component_effects(pair_summary, c("species_pair", "metric", "comparison"),
+                         c("sample_id_1", "sample_id_2"))
+}
+```
+
+## Joint-null distributions
+
+Only groups with a valid mean-H permutation test have a histogram. For a
+Bonferroni fallback, `p_joint` and the mean-H null remain absent; its group P value
+is in `p_group`. No pooled-null approximation is substituted.
+
+```{r Joint null plots, fig.width=8, fig.height=5}
+if (params$diagnostic_plots) {
+  plot_mean_nulls(summary_results, joint_null, c("species_pair", "metric", "comparison"))
+}
+```
+
+## Numerical audit
 
 ```{r Numerical audit}
 audit

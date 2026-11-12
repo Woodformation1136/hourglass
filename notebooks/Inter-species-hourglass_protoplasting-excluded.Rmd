@@ -1,0 +1,1883 @@
+---
+title: "Inter-species hourglass analysis"
+params:
+  sample_id_1: lch_tenx_batch1
+  sample_id_2: ptr_tenx_batch1
+  individual_id_1: lch_tenx_batch1
+  individual_id_2: ptr_tenx_batch1
+  condition_1: control
+  condition_2: control
+  batch_1: batch1
+  batch_2: batch1
+  path_10x_1: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Lch
+  path_10x_2: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr
+  path_cell_label_1: outputs/Hourglass/transfer_cell_label/lch_tenx_batch1/cell_label.csv
+  path_cell_label_2: outputs/Hourglass/transfer_cell_label/ptr_tenx_batch1/cell_label.csv
+  path_fusiform_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Fusiform Early Precursor.csv
+  path_orthogroups: outputs/ortholog_info.csv
+  path_protoplasting_induced: test/protoplast_sensitive/dea_all.csv
+  keep_only_transfer_pass: TRUE
+  n_bins: 10
+  n_permutation: 500
+  n_bootstrap: 100
+  n_parallel: 10
+  window_dtw: 0.5
+  window_mid: 3
+  open.begin: TRUE
+  open.end: TRUE
+  metric: spearman
+  path_key_data: test/Hourglass/inter_species_hourglass/ptr_tenx_batch1/pearson/key_data.csv
+  path_key_summary: test/Hourglass/inter_species_hourglass/ptr_tenx_batch1/pearson/key_summary.csv
+  path_image: test/Hourglass/inter_species_hourglass/ptr_tenx_batch1/pearson/Rdata.rds
+  path_debug_figure: test/Hourglass/inter_species_hourglass/debug_figure/ptr_tenx_batch1-pearson.png
+output:
+  html_document:
+    df_print: paged
+---
+
+# Testing the inter-species hourglass model
+
+Statistically test whether the two cell lineages (fusiform & ray lineages) share higher transcriptomic similarity at mid developmental stage.
+
+## Setup
+
+```{r Library}
+library(Seurat, quietly = TRUE)
+library(slingshot, quietly = TRUE)
+library(dtw, quietly = TRUE)
+library(sccore, quietly = TRUE)
+library(magrittr, quietly = TRUE)
+library(Matrix, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
+library(pheatmap, quietly = TRUE)
+library(foreach, quietly = TRUE)
+library(doSNOW, quietly = TRUE)
+source("notebooks/scripts/hourglass_analysis.R")
+source("notebooks/scripts/parallel_processing.R")
+```
+
+Params
+
+```{r print markdown params}
+params
+```
+
+Configure for parallel processing
+
+```{r Configure for parallel processing}
+Sys.setenv(
+  OMP_NUM_THREADS = "1",
+  OPENBLAS_NUM_THREADS = "1",
+  MKL_NUM_THREADS = "1",
+  VECLIB_MAXIMUM_THREADS = "1"
+)
+```
+
+Global variables
+
+```{r define global variables}
+path_mtx_1 <- file.path(params$path_10x_1, "outs/filtered_feature_bc_matrix.h5")
+path_mtx_2 <- file.path(params$path_10x_2, "outs/filtered_feature_bc_matrix.h5")
+path_pca_1 <- file.path(params$path_10x_1, "outs/analysis/pca/10_components/projection.csv")
+path_pca_2 <- file.path(params$path_10x_2, "outs/analysis/pca/10_components/projection.csv")
+path_umap_1 <- file.path(params$path_10x_1, "outs/analysis/umap/2_components/projection.csv")
+path_umap_2 <- file.path(params$path_10x_2, "outs/analysis/umap/2_components/projection.csv")
+
+# Per-cell labels are always imported from Transfer_cell_label.Rmd output.
+path_cell_label_1 <- params$path_cell_label_1
+path_cell_label_2 <- params$path_cell_label_2
+
+keep_only_transfer_pass <- isTRUE(params$keep_only_transfer_pass)
+
+# Set this path here, or call options(hourglass.orthogroup_table = "...")
+# before rendering. No new YAML parameters are required.
+orthogroup_table <- params$path_orthogroups
+focal_species <- c("PoT", "EuG", "LiC", "TrA")
+species_codes <- c(ptr = "PoT", egr = "EuG", lch = "LiC", tar = "TrA")
+species_1 <- sub("_.*$", "", as.character(params$sample_id_1))
+species_2 <- sub("_.*$", "", as.character(params$sample_id_2))
+if (
+  !all(c(species_1, species_2) %in% names(species_codes)) ||
+  identical(species_1, species_2) ||
+  !all(unname(species_codes[c(species_1, species_2)]) %in% focal_species) ||
+  !all(focal_species %in% species_codes)
+) {
+  stop("Check species_1, species_2 and focal_species in the configuration.")
+}
+
+# Species 1 is the DTW query and defines the developmental-stage coordinates.
+# Prespecify these labels; do not select the middle stage from the similarity peak.
+middle_cell_types <- c(
+  "Fusiform Early Precursor"
+  # "Fusiform Intermediate Precursor"
+)
+middle_fraction <- 0.5
+cluster_levels <- c(
+  "Fusiform Organizer",
+  "Fusiform Early Precursor",
+  "Fusiform Intermediate Precursor",
+  "Fiber",
+  "Vessel"
+)
+fusiform_lineage <- cluster_levels
+lineage_cell_types <- list(
+  Lineage1 = c(
+    "Fusiform Organizer",
+    "Fusiform Early Precursor",
+    "Fusiform Intermediate Precursor",
+    "Fiber"
+  )
+)
+color_palette <- c(
+  "Fiber" = "#E41A1CFF",
+  "Vessel" = "#377EB8FF",
+  "Fusiform Early Precursor" = "#4DAF4AFF",
+  "Fusiform Organizer" = "#984EA3FF",
+  "Ray Organizer" = "#FF7F00FF",
+  "Ray Precursor" = "#FFFF33FF",
+  "Fusiform Intermediate Precursor" = "#A65628FF",
+  "Ray" = "#F781BFFF",
+  "Tracheid" = "#55A3FF"
+)
+comparison_names <- c("Fiber-Fiber")
+```
+
+## Single-copy orthogroups
+
+Compare the fusiform-to-fiber and fusiform-to-vessel trajectories between species, separately. Keep exactly one locus per focal species **before** intersecting with expression features. By default, this applies the supplied four-species criterion (`PoT`, `EuG`, `LiC`, `TrA`), not only the two-species criterion.
+
+```{r Read single-copy orthogroups}
+orth <- read.csv(
+  orthogroup_table,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+stopifnot(all(c("cluster_id", "species_name", "gene_name") %in% names(orth)))
+
+# 
+orth_focal <- orth %>%
+  dplyr::filter(species_name %in% focal_species) %>%
+  dplyr::distinct(cluster_id, species_name, gene_name)
+if (
+  nrow(orth_focal) == 0L || anyNA(orth_focal) ||
+  any(!nzchar(orth_focal$cluster_id)) || any(!nzchar(orth_focal$gene_name))
+) {
+  stop("The focal-species orthogroup memberships are empty or contain missing IDs.")
+}
+
+orth_copy_number <- orth_focal %>%
+  dplyr::count(cluster_id, species_name, name = "n_loci") %>%
+  tidyr::complete(
+    cluster_id,
+    species_name = focal_species,
+    fill = list(n_loci = 0L)
+  ) %>%
+  tidyr::pivot_wider(names_from = species_name, values_from = n_loci)
+
+single_copy_groups <- orth_copy_number[
+  rowSums(as.matrix(orth_copy_number[, focal_species, drop = FALSE]) == 1L) ==
+    length(focal_species),
+  "cluster_id", drop = FALSE
+]
+
+# 
+orth_single_copy <- orth_focal %>%
+  dplyr::semi_join(single_copy_groups, by = "cluster_id") %>%
+  tidyr::pivot_wider(
+    id_cols = cluster_id,
+    names_from = species_name,
+    values_from = gene_name
+  ) %>%
+  dplyr::arrange(cluster_id)
+
+for (sp in names(species_codes)) {
+  names(orth_single_copy)[names(orth_single_copy) == species_codes[[sp]]] <- sp
+}
+if (nrow(orth_single_copy) < 2L) {
+  stop("Fewer than two single-copy orthogroups passed the focal-species criterion.")
+}
+for (sp in c(species_1, species_2)) {
+  if (anyDuplicated(orth_single_copy[[sp]])) {
+    stop("A ", sp, " gene is assigned to more than one retained orthogroup.")
+  }
+}
+
+dim(orth_single_copy)
+head(orth_single_copy)
+```
+
+Get protoplasting-induced orthogroups
+
+```{r Regress out protoplasting genes}
+dea_all <- read.csv(params$path_protoplasting_induced)
+deg_sc <- dea_all %>%
+  filter(
+    log2FoldChange.sn > 1.5,
+    log2FoldChange.sp > 1.5,
+    padj.sn < 0.05,
+    padj.sp < 0.05
+  ) %>%
+  pull(gene)
+protoplasting_induced <- get_markers(orth, deg_sc, "orthogroup")
+head(protoplasting_induced); length(protoplasting_induced)
+```
+
+Helper functions
+
+```{r Define helper functions}
+# Native gene IDs remain in each Seurat object for independent PCA/Slingshot.
+# Only cross-species expression comparisons use aligned orthogroup IDs.
+orthogroup_expression <- function(pb, orth_expression, species_name) {
+  ids <- orth_expression[[species_name]]
+  if (!all(ids %in% rownames(pb))) {
+    stop("Some retained ", species, " genes are absent from the pseudobulk matrix.")
+  }
+  out <- pb[ids, , drop = FALSE]
+  rownames(out) <- orth_expression$cluster_id
+  out
+}
+preprocess_seurat <- function(object) {
+  object <- NormalizeData(object, verbose = FALSE)
+  object <- FindVariableFeatures(object, verbose = FALSE)
+  object <- ScaleData(object, features = VariableFeatures(object), verbose = FALSE)
+  RunPCA(object, npcs = 30, seed.use = 42, verbose = FALSE)
+}
+```
+
+## Seurat preprocessing
+
+```{r CreateSeuratObject}
+read_sample <- function(path, sample_id) {
+  counts <- Read10X_h5(path)
+  if (is.list(counts)) {
+    if (!"Gene Expression" %in% names(counts)) {
+      stop("No Gene Expression matrix was found for ", sample_id)
+    }
+    counts <- counts[["Gene Expression"]]
+  }
+  CreateSeuratObject(counts, project = sample_id)
+}
+seurat_obj_1 <- read_sample(path_mtx_1, params$sample_id_1)
+seurat_obj_2 <- read_sample(path_mtx_2, params$sample_id_2)
+seurat_obj_1
+seurat_obj_2
+```
+
+Normalize data
+
+```{r Normalize data}
+seurat_obj_1 <- preprocess_seurat(seurat_obj_1)
+seurat_obj_2 <- preprocess_seurat(seurat_obj_2)
+```
+
+Get PCA embedding
+
+```{r Get PCA embeddings}
+p_pca_1 <- DimPlot(seurat_obj_1, reduction = "pca") +
+  theme_void() + labs(title = params$sample_id_1)
+p_pca_2 <- DimPlot(seurat_obj_2, reduction = "pca") +
+  theme_void() + labs(title = params$sample_id_2)
+p_pca_1
+p_pca_2
+```
+
+Import UMAP
+
+```{r Import UMAP}
+import_umap <- function(object, path) {
+  if (!file.exists(path)) return(object)
+  emb <- read.csv(path, stringsAsFactors = FALSE)
+  stopifnot(
+    all(c("Barcode", "UMAP.1", "UMAP.2") %in% names(emb)),
+    !anyDuplicated(emb$Barcode),
+    all(Cells(object) %in% emb$Barcode)
+  )
+  rownames(emb) <- emb$Barcode
+  emb <- as.matrix(emb[Cells(object), c("UMAP.1", "UMAP.2"), drop = FALSE])
+  object[["umap"]] <- CreateDimReducObject(
+    embeddings = emb, key = "UMAP_", global = TRUE,
+    assay = DefaultAssay(object)
+  )
+  object
+}
+seurat_obj_1 <- import_umap(seurat_obj_1, path_umap_1)
+seurat_obj_2 <- import_umap(seurat_obj_2, path_umap_2)
+plot_reduction_1 <- if ("umap" %in% Reductions(seurat_obj_1)) "umap" else "pca"
+plot_reduction_2 <- if ("umap" %in% Reductions(seurat_obj_2)) "umap" else "pca"
+```
+
+Import per-cell labels generated by `Transfer_cell_label.Rmd`
+
+```{r Import cell label}
+seurat_obj_1 <- import_cell_label(
+  seurat_obj_1, 
+  path_cell_label_1, 
+  cluster_levels,
+  keep_only_transfer_pass
+)
+seurat_obj_2 <- import_cell_label(
+  seurat_obj_2, 
+  path_cell_label_2, 
+  cluster_levels,
+  keep_only_transfer_pass
+)
+p_cluster_1 <- DimPlot(seurat_obj_1, reduction = plot_reduction_1) +
+  scale_color_manual(values = color_palette) + theme_void() +
+  labs(title = params$sample_id_1)
+p_cluster_2 <- DimPlot(seurat_obj_2, reduction = plot_reduction_2) +
+  scale_color_manual(values = color_palette) + theme_void() +
+  labs(title = params$sample_id_2)
+p_cluster_1
+p_cluster_2
+```
+
+Proportion of cells in each lineage
+
+```{r}
+composition_raw <- rbind(
+  transform(as.data.frame(table(seurat_obj_1$cell_label)[lineage_cell_types$Lineage1]), sample_id = params$sample_id_1),
+  transform(as.data.frame(table(seurat_obj_2$cell_label)[lineage_cell_types$Lineage1]), sample_id = params$sample_id_2)
+) %>% mutate(
+  cell_type = Var1
+)
+
+p_comp_lineage <- ggplot(
+  composition_raw, 
+  aes(x = sample_id, y = Freq, fill = cell_type)
+) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  scale_x_discrete(drop = FALSE) +
+  scale_fill_manual(values = color_palette) +
+  coord_flip() +
+  scale_y_reverse() +
+  theme_classic() +
+  theme(
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "Lineage",
+    y = "Cell type composition (%)",
+    fill = "Cell type"
+  )
+p_comp_lineage
+```
+
+Plot UMI/gene counts
+
+```{r Plot UMI/gene counts}
+for (i in 1:2) {
+  obj <- list(seurat_obj_1, seurat_obj_2)[[i]]
+  reduction <- c(plot_reduction_1, plot_reduction_2)[i]
+  for (feature in c("nCount_RNA", "nFeature_RNA")) {
+    print(
+      FeaturePlot(obj, features = feature, reduction = reduction) +
+        scale_color_viridis_c(direction = -1) + theme_void() +
+        theme(legend.position = "right") +
+        labs(title = paste(Project(obj), feature))
+    )
+  }
+}
+```
+
+Match single-copy genes to both count matrices. Gene IDs must match exactly; transcript/version suffixes are not removed automatically. Exclude orthogroups with zero total counts in either retained fusiform population. Use all remaining single-copy orthogroups, not the intersection of species-specific highly variable genes.
+
+```{r Match orthogroups to expression}
+# get expressed orthologs
+orth_expression <- orth_single_copy[
+  orth_single_copy[[species_1]] %in% rownames(seurat_obj_1) &
+    orth_single_copy[[species_2]] %in% rownames(seurat_obj_2),
+  , drop = FALSE
+]
+
+# exclude protoplasting-induced orthogroups
+message(
+  "Removing ", 
+  sum(orth_expression$cluster_id %in% protoplasting_induced), 
+  " protoplasting-induced orthogroups"
+)
+orth_expression %<>% filter(
+  !cluster_id %in% protoplasting_induced
+)
+
+genes <- orth_expression$cluster_id
+if (length(genes) < 2L) stop("Too few single-copy orthogroups are expressed in both species.")
+message(
+  nrow(orth_single_copy), " single-copy orthogroups; ",
+  length(genes), " matched and expressed in both fusiform populations. (protoplasting removed)"
+)
+
+head(orth_expression); dim(orth_expression)
+```
+
+Pairwise transcriptomic similarity among discrete cell states
+
+```{r Discrete stages hourlgass}
+pb_discrete_1 <- orthogroup_expression(
+  AggregateExpression(seurat_obj_1, assays = "RNA", group.by = "cell_label")$RNA,
+  orth_expression,
+  species_1
+)
+pb_discrete_2 <- orthogroup_expression(
+  AggregateExpression(seurat_obj_2, assays = "RNA", group.by = "cell_label")$RNA,
+  orth_expression,
+  species_2
+)
+similarity_discrete <- calculate_similarity(
+  pb_discrete_1[, lineage_cell_types$Lineage1, drop = FALSE],
+  pb_discrete_2[, lineage_cell_types$Lineage1, drop = FALSE],
+  metrics = params$metric
+)
+p_similarity_discrete <- pheatmap(
+  similarity_discrete,
+  cluster_rows = FALSE, cluster_cols = FALSE,
+  display_numbers = TRUE, number_format = "%.2f",
+  main = sprintf("Fusiform: %s (rows) vs %s (columns)\n(%s)",
+                 species_1, species_2, params$metric)
+)
+```
+
+## Test hourglass along pseudotime
+
+**The procedure:**
+
+1.  Infer fusiform pseudotime independently in each species using Slingshot based on its own PCA coordinates.
+
+2.  Aggregate expression by pseudotime bins (by `n_bins`).
+
+3.  Calculate pairwise similarity between species within each fusiform branch using matched single-copy orthogroups (using `metric`).
+
+4.  Align the corresponding species-specific branches by Dynamic Time Warping (DTW), using `window_dtw`. Species 1 is the query; species 2 is the reference.
+
+5.  Calculate the `hourglass score` based on cell lineage alignment.
+
+    Hourglass score is defined as follows:
+
+    Let $S_i$ denote the transcriptomic similarity at aligned pseudotime position $i$, and let $\mathcal{E}$, $\mathcal{M}$, and $\mathcal{L}$ denote the sets of early-, middle-, and late-stage positions, respectively. Stage-specific mean similarities were calculated as
+
+    $$
+    E=\frac{1}{|\mathcal{E}|}\sum_{i\in\mathcal{E}}S_i,\qquad
+    M=\frac{1}{|\mathcal{M}|}\sum_{i\in\mathcal{M}}S_i,\qquad
+    L=\frac{1}{|\mathcal{L}|}\sum_{i\in\mathcal{L}}S_i.
+    $$
+
+    The hourglass score was then defined as
+
+    $$
+    H=\min\left\{M-E,\;M-L\right\}.
+    $$
+
+    A positive score requires the middle-stage similarity to exceed both the early- and late-stage similarities.
+
+6.  Permutation for the null distribution of the hourglass score\
+
+    (1) Shuffle pseudotime values\
+    (2) Repeat Step 2-5\
+    (3) Estimate permutation p-value
+
+7.  Bootstrapping for the confidence interval of the hourglass score\
+
+    (1) Re-sample cells with replacement\
+    (2) Repeat Step 1-5\
+    (3) Estimate bootstrap confidence interval
+
+### 1. Pseudotime inference
+
+Infer Pseudotime based on PCA coordinates
+
+```{r Infer Pseudotime}
+slingshot_res_1 <- slingshot_manual(seurat_obj_1, lineage_cell_types)
+slingshot_res_2 <- slingshot_manual(seurat_obj_2, lineage_cell_types)
+pseudotime_1 <- slingshot_res_1$pseudotime
+pseudotime_2 <- slingshot_res_2$pseudotime
+branch_id_1 <- slingshot_res_1$branch_id
+branch_id_2 <- slingshot_res_2$branch_id
+head(pseudotime_1)
+head(pseudotime_2)
+```
+
+#### Plot Pseudotime
+
+```{r Plot Pseudotime}
+plot_pseudotime <- function(object, result, reduction) {
+  prob <- slingCurveWeights(result$SlingshotDataSet, as.probs = TRUE)
+  pt <- result$pseudotime
+  prob[!is.finite(pt)] <- 0
+  pt[!is.finite(pt)] <- 0
+  totals <- rowSums(prob)
+  object$pseudotime_all <- ifelse(totals > 0, rowSums(pt * prob) / totals, NA_real_)
+  FeaturePlot(object, features = "pseudotime_all", reduction = reduction) +
+    scale_color_viridis_c(direction = -1, option = "magma") +
+    theme_void() + theme(legend.position = "bottom") +
+    labs(title = Project(object))
+}
+p_pt_1 <- plot_pseudotime(seurat_obj_1, slingshot_res_1, plot_reduction_1)
+p_pt_2 <- plot_pseudotime(seurat_obj_2, slingshot_res_2, plot_reduction_2)
+p_pt_1 | p_pt_2
+```
+
+### 2. Bin expression by pseudotime
+
+Expression was aggregated within equal-width pseudotime bins independently for each lineage.
+
+Corresponding fusiform branches from the two species were subsequently aligned using a constrained monotonic DTW (Dynamic Time Warping) path.
+
+```{r Bin expression}
+n_bins <- as.integer(params$n_bins)
+res_L1_1 <- bin_expression(
+  seurat_obj_1, 
+  pseudotime_1, 
+  branch_id_1,
+  lineage = 1, 
+  n_bins = n_bins, 
+  prefix = paste0(species_1, "-Fiber")
+)
+res_L1_2 <- bin_expression(
+  seurat_obj_2, 
+  pseudotime_2, 
+  branch_id_2,
+  lineage = 1, 
+  n_bins = n_bins, 
+  prefix = paste0(species_2, "-Fiber")
+)
+pb_L1_1 <- orthogroup_expression(res_L1_1$Pseudobulk, orth_expression, species_1)
+pb_L1_2 <- orthogroup_expression(res_L1_2$Pseudobulk, orth_expression, species_2)
+comp_L1_1 <- res_L1_1$Composition
+comp_L1_2 <- res_L1_2$Composition
+```
+
+Check bin composition
+
+```{r Check bin composition}
+# Cell counts
+composition <- rbind(
+  transform(as.data.frame(comp_L1_1), lineage = "Fiber", species = species_1),
+  transform(as.data.frame(comp_L1_2), lineage = "Fiber", species = species_2)
+)
+
+composition$bin <- factor(composition$bin, levels = 1:n_bins)
+composition$cell_type <- factor(composition$cell_type, levels = cluster_levels)
+
+p_comp <- ggplot(composition, aes(x = bin, y = Freq, fill = cell_type)) +
+  geom_col(position = "fill") +
+  facet_grid(species~.) +
+  scale_y_continuous(labels = scales::label_percent()) +
+  scale_x_discrete(drop = FALSE) +
+  scale_fill_manual(values = color_palette) +
+  theme_bw() +
+  labs(
+    x = "Pseudotime bin",
+    y = "Cell type composition (%)",
+    fill = "Cell type"
+  )
+p_comp
+```
+
+```{r Get middle module}
+# read Populus marker genes
+mid_markers <- read.csv(params$path_fusiform_middle_markers)
+orthogroup <- read.csv(params$path_orthogroup)
+
+# get ortho-markers
+mid_marker_genes <- mid_markers$gene %>% setdiff(deg_sc)
+species_name <- strsplit(params$sample_id_1, "")
+species_marker <- get_markers(orthogroup, mid_markers$gene, params$sample_id_1)
+species2_marker <- get_markers(orthogroup, mid_markers$gene, params$sample_id_2)
+
+# get middle module
+modules <- get_middle_module(
+  pb_mat = res_L1_1$Pseudobulk,
+  comp = comp_L1_1,
+  cell_types = "Fusiform Early Precursor",
+  cell_type_marker = species_marker, 
+  n_bins = params$window_mid
+)
+modules2 <- get_middle_module(
+  pb_mat = res_L1_2$Pseudobulk,
+  comp = comp_L1_2,
+  cell_types = "Fusiform Early Precursor",
+  cell_type_marker = species2_marker, 
+  n_bins = params$window_mid
+)
+print(modules)
+print(modules2)
+
+# plot marker expression
+data_plot <- data.frame(
+      mean = get_marker_profile(res_L1_1$Pseudobulk, species_marker),
+      bin = colnames(res_L1_1$Pseudobulk),
+      count = colSums(res_L1_1$Pseudobulk[species_marker, ] > 0)
+    ) %>% dplyr::mutate(
+      x = sprintf("%s (n = %s)", bin, count)
+    )
+p_marker_spe1 <- ggplot(
+    data_plot,
+    aes(
+      x = x, 
+      y = mean,
+      group = "1"
+    )
+  ) +
+  geom_point() +
+  geom_line() +
+  annotate(
+    "rect",
+    xmin = min(modules$middle) - 0.5,
+    xmax = max(modules$middle) + 0.5,
+    ymin = min(data_plot$mean, na.rm = TRUE),
+    ymax = max(data_plot$mean, na.rm = TRUE),
+    alpha = 0.2,
+    fill = "purple"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)
+  ) +
+  labs(
+    title = "Average expression level of middle-stage marker genes",
+    subtitle = "Shade = Mid-development stages; n = detected markers",
+    x = sprintf("%s pseudotime bins", params$sample_id_1),
+    y = "log2(CPM)"
+  )
+p_marker_spe1
+
+data_plot <- data.frame(
+      mean = get_marker_profile(res_L1_2$Pseudobulk, species2_marker),
+      bin = colnames(res_L1_2$Pseudobulk),
+      count = colSums(res_L1_2$Pseudobulk[species2_marker, ] > 0)
+    ) %>% dplyr::mutate(
+      x = sprintf("%s (n = %s)", bin, count)
+    )
+p_marker_spe2 <- ggplot(
+    data_plot,
+    aes(
+      x = x, 
+      y = mean,
+      group = "1"
+    )
+  ) +
+  geom_point() +
+  geom_line() +
+  annotate(
+    "rect",
+    xmin = min(modules2$middle) - 0.5,
+    xmax = max(modules2$middle) + 0.5,
+    ymin = min(data_plot$mean, na.rm = TRUE),
+    ymax = max(data_plot$mean, na.rm = TRUE),
+    alpha = 0.2,
+    fill = "purple"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1)
+  ) +
+  labs(
+    title = "Average expression level of middle-stage marker genes",
+    subtitle = "Shade = Mid-development stages; n = detected markers",
+    x = sprintf("%s pseudotime bins", params$sample_id_2),
+    y = "log2(CPM)"
+  )
+p_marker_spe2
+```
+
+### 3. Pairwise similarity of pseudotime bins
+
+Calculate pairwise similarity among pseudotime bins based on the specified metric.
+
+```{r Calculate similarity across binned pseudotime}
+similarity_L1 <- calculate_similarity(pb_L1_2, pb_L1_1, metrics = params$metric)
+```
+
+#### Plot pairwise similarity
+
+```{r Plot similarity}
+pheatmap(
+  similarity_L1,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  main = sprintf("Fiber: %s vs %s\n(%s)", species_1, species_2, params$metric)
+)
+```
+
+### 4. Align pseudotime bins
+
+Align pseudotime bins
+
+```{r Run align_similarity_matrix}
+aligned_L1 <- align_similarity_matrix(
+  similarity_L1 %>% t, 
+  ceiling(params$window_dtw * max(dim(similarity_L1))), 
+  open.begin = params$open.begin,
+  open.end = params$open.end
+)
+S_L1 <- aligned_L1$path$similarity
+```
+
+#### Plot DTW aligned paths
+
+```{r Plot DTW path}
+plot_dtw_path <- function(
+  similarity,
+  aligned,
+  title
+) {
+  similarity <- as.matrix(similarity)
+
+  stopifnot(
+    max(aligned$path$L1_i) <= nrow(similarity),
+    max(aligned$path$L2_i) <= ncol(similarity)
+  )
+
+  heatmap_data <- expand.grid(
+    L1_i = seq_len(nrow(similarity)),
+    L2_i = seq_len(ncol(similarity))
+  )
+
+  heatmap_data$similarity <- similarity[
+    cbind(
+      heatmap_data$L1_i,
+      heatmap_data$L2_i
+    )
+  ]
+
+  ggplot(
+    heatmap_data,
+    aes(
+      x = L2_i,
+      y = L1_i,
+      fill = similarity
+    )
+  ) +
+    geom_tile() +
+    geom_path(
+      data = aligned$path,
+      aes(
+        x = L2_i,
+        y = L1_i
+      ),
+      inherit.aes = FALSE,
+      linewidth = 1
+    ) +
+    geom_point(
+      data = aligned$path,
+      aes(
+        x = L2_i,
+        y = L1_i
+      ),
+      inherit.aes = FALSE,
+      size = 1.5
+    ) +
+    scale_fill_distiller(
+      palette = "RdYlBu", 
+      direction = -1
+    ) +
+    scale_x_continuous(
+      breaks = seq_len(ncol(similarity)),
+      labels = colnames(similarity),
+      expand = c(0, 0)
+    ) +
+    scale_y_reverse(
+      breaks = seq_len(nrow(similarity)),
+      labels = rownames(similarity),
+      expand = c(0, 0)
+    ) +
+    coord_fixed() +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(
+        angle = 90,
+        hjust = 1,
+        vjust = 0.5
+      )
+    ) +
+    labs(
+      x = paste(species_2, "reference bin"),
+      y = paste(species_1, "query bin"),
+      fill = "similarity",
+      title = title
+    )
+}
+p_path_L1 <- plot_dtw_path(
+  similarity = t(similarity_L1),
+  aligned = aligned_L1,
+  title = sprintf("Fiber: %s vs %s DTW alignment\n(%s)", species_1, species_2, params$metric)
+)
+
+p_path_L1
+```
+
+Summarize cell type correspondence along the aligned path
+
+```{r}
+alignment_mass_L1 <- alignment_label_mass(
+  aligned_L1, comp_L1_1, comp_L1_2,
+  lineage_cell_types$Lineage1, lineage_cell_types$Lineage1
+)
+pheatmap(
+  alignment_mass_L1, 
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE,
+  main = paste("Fiber:", species_1, "(rows) vs", species_2, "(columns)")
+)
+```
+
+#### Plot transcriptomic similarity along the aligned trajectory path
+
+```{r Plot simialrity along the alinged path}
+p_alinged_similarity1 <- ggplot(
+    data = aligned_L1$path,
+    aes(
+      x = L1_i, 
+      y = similarity, 
+    )
+  ) + 
+  geom_line() +
+  geom_point() +
+  annotate(
+    "rect",
+    xmin = min(modules$middle) - 0.5,
+    xmax = max(modules$middle) + 0.5,
+    ymin = min(aligned_L1$path$similarity, na.rm = TRUE),
+    ymax = max(aligned_L1$path$similarity, na.rm = TRUE),
+    alpha = 0.2,
+    fill = "purple"
+  ) +
+  theme_bw() +
+  labs(
+      x = paste(species_1, "pseudotime bin"),
+      y = sprintf("Transcriptomic similarity (%s)", params$metric)
+  ) +
+  theme(
+    legend.position = "bottom"
+  )
+
+p_alinged_similarity1 + labs(title = "Fiber-Fiber")
+```
+
+### 5. Calculate hourglass score
+
+Hourglass score is defined as follows:
+
+Let $S_i$ denote the transcriptomic similarity at aligned pseudotime position $i$, and let $\mathcal{E}$, $\mathcal{M}$, and $\mathcal{L}$ denote the sets of early-, middle-, and late-stage positions, respectively. Stage-specific mean similarities were calculated as
+
+$$
+E=\frac{1}{|\mathcal{E}|}\sum_{i\in\mathcal{E}}S_i,\qquad
+M=\frac{1}{|\mathcal{M}|}\sum_{i\in\mathcal{M}}S_i,\qquad
+L=\frac{1}{|\mathcal{L}|}\sum_{i\in\mathcal{L}}S_i.
+$$
+
+The hourglass score was then defined as
+
+$$
+H=\min\left\{M-E,\;M-L\right\}.
+$$
+
+A positive score requires the middle-stage similarity to exceed both the early- and late-stage similarities.
+
+```{r Define function for calculating hourglass scores}
+print(hourglass_score)
+```
+
+```{r Calculate the hourglass score}
+scores_observed <- rbind(
+  hourglass_score(aligned_L1$path, modules)
+) %>% 
+  as.data.frame %>%
+  dplyr::mutate(
+    comparison = c("Fiber-Fiber"),
+    permutation = "Observed"
+  )
+
+scores_observed
+```
+
+### 6. Permutation test
+
+```{r Permutation test, echo=TRUE, results='hide'}
+# One shared random ordering, restricted to the eligible cells of each branch.
+# permute_pseudotime <- function(
+#     pseudotime, 
+#     branch_id, 
+#     cell_labels,
+#     seed
+# ) {
+#   set.seed(seed)
+#   priority <- sample.int(nrow(pseudotime))
+#   out <- pseudotime
+#   for (j in seq_along(lineage_cell_types)) {
+#     keep <- grepl(paste0("(^|,)", j, "(,|$)"), branch_id) &
+#       cell_labels %in% lineage_cell_types[[j]] & is.finite(pseudotime[, j])
+#     out[keep, j] <- sort(pseudotime[keep, j])[rank(priority[keep], ties.method = "first")]
+#   }
+#   out
+# }
+n_permutation <- as.integer(params$n_permutation)
+metric <- as.character(params$metric)
+
+set.seed(seed_from_id(params$sample_id_2))
+permutation_seeds <- sample.int(.Machine$integer.max, n_permutation, replace = FALSE)
+n_workers_perm <- get_n_workers(n_permutation, params$n_parallel)
+message("Running ", n_permutation, " permutations on ", n_workers_perm, " workers.")
+cl_perm <- parallel::makeCluster(n_workers_perm)
+registerDoSNOW(cl_perm)
+perm_progress <- make_parallel_progress(n_permutation)
+
+scores_perm_list <- tryCatch(
+  {
+    foreach::foreach(
+      i = seq_len(n_permutation),
+      .inorder = FALSE,
+      .options.snow = perm_progress$snow_options,
+      .packages = c("Seurat", "Matrix", "magrittr", "dtw", "sccore", "tibble")
+    ) %dopar% {
+      source("notebooks/scripts/hourglass_analysis.R")
+      #
+      set.seed(permutation_seeds[i])
+      sample_seeds <- sample.int(.Machine$integer.max, 2L)
+      
+      # # shuffle query pseudotime
+      # pt_i_1 <- permute_pseudotime(
+      #   pseudotime_1, 
+      #   branch_id_1, 
+      #   seurat_obj_1$cell_label,
+      #   seed = sample_seeds[1]
+      # )
+      # pt_i_2 <- permute_pseudotime(
+      #   pseudotime_2, 
+      #   branch_id_2, 
+      #   seurat_obj_1$cell_label,
+      #   seed = sample_seeds[2]
+      # )
+      # 
+      # # aggregate query pseudobulk
+      # binned_1 <- bin_expression(
+      #   seurat_obj_1, 
+      #   pt_i_1, 
+      #   branch_id_1,
+      #   lineage = 1, 
+      #   n_bins = n_bins,
+      #   prefix = paste0(species_1, "-Fiber")
+      # )
+      # binned_2 <- bin_expression(
+      #   seurat_obj_2, 
+      #   pt_i_2, 
+      #   branch_id_2,
+      #   lineage = 1, 
+      #   n_bins = n_bins,
+      #   prefix = paste0(species_2, "-Fiber")
+      # )
+      # query_pb <- orthogroup_expression(
+      #   binned_1$Pseudobulk, 
+      #   orth_expression, 
+      #   species_1
+      # )
+      # reference_pb <- orthogroup_expression(
+      #   binned_2$Pseudobulk, 
+      #   orth_expression, 
+      #   species_2
+      # )
+      set.seed(sample_seeds[1])
+      query_pb <- pb_L1_1[, sample(colnames(pb_L1_1), replace = FALSE)]
+      set.seed(sample_seeds[2])
+      reference_pb <- pb_L1_2[, sample(colnames(pb_L1_2), replace = FALSE)]
+      colnames(query_pb) <- colnames(pb_L1_1)
+      colnames(reference_pb) <- colnames(pb_L1_2)
+      
+      # # call reference pseudobulk
+      # reference_pb <- pb_L1_2
+      # 
+      # calculate similarity
+      similarity_perm <- calculate_similarity(
+        reference_pb, 
+        query_pb, 
+        metric
+      )
+      # aligned <- align_similarity_matrix(
+      #   t(similarity), 
+      #   ceiling(params$window_dtw * max(dim(similarity))), 
+      #   open.begin = params$open.begin,
+      #   open.end = params$open.end
+      # )
+      aligned <- aligned_L1
+      aligned$path %<>% 
+        mutate(
+          similarity = t(similarity_perm)[L1_bin, L2_bin]
+        )
+      score_matrix <- hourglass_score(aligned$path, modules)
+      # as.data.frame(
+      #   score_matrix
+      # ) %>% dplyr::mutate(
+      #   comparison = comparison_names,
+      #   permutation = sprintf("Permutation-%d", i),
+      #   seed = permutation_seeds[i]
+      # )
+      data.frame(
+        rbind(score_matrix),
+        comparison = comparison_names,
+        permutation = sprintf("Permutation-%d", i),
+        seed = permutation_seeds[i], row.names = NULL, check.names = FALSE
+      )
+    }
+  },
+  finally = {
+    close(perm_progress$pb)
+    parallel::stopCluster(cl_perm)
+    foreach::registerDoSEQ()
+  }
+)
+scores_perm <- dplyr::bind_rows(scores_perm_list)
+```
+
+Plot permutation transcriptomic similarities
+
+```{r Plot transcriptomic similarity along developmental stages under permutation}
+stages <- c("Early", "Middle", "Late")
+stages <- factor(stages, levels = stages)
+data_plot <- data.frame(
+    x = stages,
+    ymin = apply(scores_perm[, stages], 2, quantile, 0.05, na.rm = TRUE),
+    y = apply(scores_perm[, stages], 2, median, na.rm = TRUE),
+    ymax = apply(scores_perm[, stages], 2, quantile, 0.95, na.rm = TRUE),
+    group = "permutation"
+  )
+data_plot <- rbind(
+  data_plot,
+  data.frame(
+    x = stages,
+    y = scores_observed[, stages] %>% unlist,
+    ymin = NA,
+    ymax = NA,
+    group = "observed"
+  )
+)
+p_perm_similarity <- ggplot(
+  data_plot,
+  aes(x = x, y = y, group = group, color = group)
+) +
+  geom_ribbon(
+    aes(ymin = ymin, ymax = ymax), 
+    fill = "grey70", 
+    color = NA, 
+    alpha = 0.5
+  ) +
+  geom_point() +
+  geom_line() +
+  scale_color_manual(
+    values = c("observed" = "red", "permutation" = "black")
+  ) +
+  theme_bw() +
+  labs(
+    title = "Permuted transcriptomic similarity",
+    subtitle = "points: median; band: (q5, q95)",
+    x = "Stages",
+    y = params$metric
+  )
+
+p_perm_similarity
+```
+
+Calculate the permutation p-value
+
+```{r Calculate the permutation p-value}
+observed_H <- scores_observed %>%
+  dplyr::select(
+    comparison,
+    H_obs = H
+  )
+
+permutation_results <- scores_perm %>%
+  dplyr::filter(
+    is.finite(H)
+  ) %>%
+  dplyr::transmute(
+    permutation,
+    comparison,
+    H_perm = H
+  ) %>%
+  dplyr::left_join(
+    observed_H,
+    by = "comparison"
+  ) %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::summarise(
+    H_obs = dplyr::first(H_obs),
+    n_permutation = dplyr::n_distinct(permutation),
+    n_null_ge_observed = sum(H_perm >= dplyr::first(H_obs)),
+    null_mean = mean(H_perm),
+    null_median = median(H_perm),
+    null_sd = stats::sd(H_perm),
+    null_q025 = unname(stats::quantile(H_perm, 0.025)),
+    null_q95 = unname(stats::quantile(H_perm, 0.95)),
+    null_q975 = unname(stats::quantile(H_perm, 0.975)),
+    observed_minus_null_mean = dplyr::first(H_obs) - mean(H_perm),
+    observed_percentile = mean(H_perm < dplyr::first(H_obs)),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    # One-sided empirical permutation P value
+    p_empirical = (n_null_ge_observed + 1) / (n_permutation + 1),
+    # Adjust p-value
+    p_holm = stats::p.adjust(p_empirical, method = "holm")
+  )
+
+permutation_results
+```
+
+#### Plot the null distribution of the hourglass score
+
+```{r Plot the null distribution of the hourglass score}
+# plot null distribution of the hourglass score
+p_permutation_H <- ggplot(
+    scores_perm,
+    aes(
+      x = H,
+      fill = comparison
+    )
+  ) +
+  geom_histogram(
+    alpha=0.5,
+    bins = 40,
+    position="identity"
+  ) +
+  geom_vline(
+    aes(xintercept = scores_observed$H[1]), 
+    colour="red"
+  ) +
+  theme_bw() +
+  labs(
+    subtitle = sprintf("P = %.4f", permutation_results$p_empirical)
+  )
+
+p_permutation_H
+```
+
+### 7. Bootstrapping
+
+```{r Define bootstrapping helper functions}
+run_bootstrap_once <- function(seed) {
+  on.exit(gc(), add = TRUE)
+  tryCatch({
+    # set random seed
+    set.seed(seed)
+    
+    # random seed for two samples
+    sample_seeds <- sample.int(.Machine$integer.max, 2L)
+    
+    # re-sample
+    objects_i <- list(
+      make_bootstrap_seurat(seurat_obj_1, sample_seeds[1])$object,
+      make_bootstrap_seurat(seurat_obj_2, sample_seeds[2])$object
+    )
+    objects_i <- lapply(objects_i, preprocess_seurat)
+    
+    # pseudotime
+    slingshot_i <- lapply(objects_i, slingshot_manual, lineage_cell_types)
+    
+    # bin expression
+    query <- bin_expression(
+      objects_i[[1]], 
+      slingshot_i[[1]]$pseudotime, 
+      slingshot_i[[1]]$branch_id,
+      lineage = 1, 
+      n_bins = n_bins,
+      prefix = paste0(species_1, "-Fiber")
+    )
+    reference <- bin_expression(
+      objects_i[[2]], 
+      slingshot_i[[2]]$pseudotime, 
+      slingshot_i[[2]]$branch_id,
+      lineage = 1, 
+      n_bins = n_bins,
+      prefix = paste0(species_2, "-Fiber")
+    )
+    
+    # identify middle stage module
+    modules_i <- get_middle_module(
+      pb_mat = query$Pseudobulk, 
+      comp = query$Composition,
+      cell_types = "Fusiform Early Precursor",
+      cell_type_marker = species_marker,
+      weight_by_prop = TRUE,
+      n_bins = params$window_mid,
+      norm_func = logcpm
+    )
+    
+    # convert pseudobulk matrix to single-copy orthogroup expression
+    query_pb <- orthogroup_expression(
+      query$Pseudobulk, 
+      orth_expression, 
+      species_1
+    )
+    reference_pb <- orthogroup_expression(
+      reference$Pseudobulk, 
+      orth_expression, 
+      species_2
+    )
+    
+    # calculate similarity
+    similarity <- calculate_similarity(
+      reference_pb, 
+      query_pb, 
+      metric
+    )
+    
+    # align bins
+    aligned <- align_similarity_matrix(
+      t(similarity), 
+      ceiling(params$window_dtw * max(dim(similarity))),
+      open.begin = params$open.begin,
+      open.end = params$open.end
+    )
+    
+    # hourglass score
+    score_i <- hourglass_score(aligned$path, modules_i)
+    
+    # alignment mass
+    mass_i <- alignment_label_mass(
+      aligned, query$Composition, reference$Composition,
+      lineage_cell_types[[1]], lineage_cell_types[[1]]
+    )
+
+    # return
+    list(
+      ok = TRUE, seed = seed,
+      scores = data.frame(
+        rbind(score_i), 
+        comparison = comparison_names,
+        bootstrap = seed, 
+        row.names = NULL, 
+        check.names = FALSE
+      ),
+      alignment_mass = mass_i, error = NA_character_
+    )
+  }, error = function(e) {
+    list(ok = FALSE, seed = seed, scores = NULL,
+         alignment_mass = NULL, error = conditionMessage(e))
+  })
+}
+```
+
+Run bootstraps
+
+```{r Run bootstraps, echo=TRUE, results='hide'}
+# get params
+n_bootstrap <- as.integer(params$n_bootstrap)
+n_bins <- as.integer(params$n_bins)
+metric <- as.character(params$metric)
+
+# get bootstrap seeds
+set.seed(seed_from_id(params$sample_id_2) + 1L)
+bootstrap_seeds <- sample.int(
+  n = .Machine$integer.max,
+  size = n_bootstrap,
+  replace = FALSE
+)
+
+# register paralelle backend
+n_workers_boot <- get_n_workers(
+  n_tasks = n_bootstrap,
+  requested = params$n_parallel
+)
+cl_boot <- parallel::makeCluster(
+  n_workers_boot
+)
+registerDoSNOW(
+  cl_boot
+)
+message(
+  "Running ", n_bootstrap, " bootstrap replicates on ", 
+  foreach::getDoParWorkers(), " workers."
+)
+
+# create progress bar
+boot_progress <- make_parallel_progress(
+  n_bootstrap
+)
+
+
+# run
+bootstrap_output <- tryCatch(
+  {
+    foreach::foreach(
+      seed = bootstrap_seeds,
+      .inorder = FALSE,
+      .packages = c(
+        "Seurat",
+        "slingshot",
+        "Matrix",
+        "magrittr",
+        "dtw",
+        "sccore",
+        "tibble",
+        "dplyr"
+      ),
+      .options.snow = boot_progress$snow_options
+    ) %dopar% {
+      source("notebooks/scripts/hourglass_analysis.R")
+      run_bootstrap_once(seed)
+    }
+  },
+  finally = {
+    close(boot_progress$pb)
+    parallel::stopCluster(cl_boot)
+    foreach::registerDoSEQ()
+  }
+)
+```
+
+Summarizing bootstrapping results
+
+```{r Summarize bootstrapping results}
+bootstrap_ok <- vapply(
+  bootstrap_output,
+  function(x) isTRUE(x$ok),
+  logical(1)
+)
+
+scores_bootstrap <- dplyr::bind_rows(
+  lapply(
+    bootstrap_output[bootstrap_ok],
+    function(x) x$scores
+  )
+)
+head(scores_bootstrap)
+```
+
+```{r}
+stages <- c("Early", "Middle", "Late")
+stages <- factor(stages, levels = stages)
+data_plot <- data.frame(
+    x = stages,
+    ymin = apply(scores_bootstrap[, stages], 2, quantile, 0.05, na.rm = TRUE),
+    y = apply(scores_bootstrap[, stages], 2, median, na.rm = TRUE),
+    ymax = apply(scores_bootstrap[, stages], 2, quantile, 0.95, na.rm = TRUE),
+    group = "bootstapping"
+  )
+data_plot <- rbind(
+  data_plot,
+  data.frame(
+    x = stages,
+    y = scores_observed[, stages] %>% unlist,
+    ymin = NA,
+    ymax = NA,
+    group = "observed"
+  )
+)
+p_boot_similarity <- ggplot(
+  data_plot,
+  aes(x = x, y = y, group = group, color = group)
+) +
+  geom_ribbon(
+    aes(ymin = ymin, ymax = ymax), 
+    fill = "grey70", 
+    color = NA, 
+    alpha = 0.5
+  ) +
+  geom_point() +
+  geom_line() + 
+  scale_color_manual(
+    values = c("observed" = "red", "bootstapping" = "black")
+  ) +
+  theme_bw() +
+  labs(
+    title = "Bootstrap transcriptomic similarity",
+    subtitle = "points: median; band: (q5, q95)",
+    x = "Stages",
+    y = params$metric
+  )
+
+p_boot_similarity
+```
+
+Check for failed bootstraps
+
+```{r Check for failed bootstraps}
+if (any(!bootstrap_ok)) {
+  bootstrap_errors <- dplyr::bind_rows(
+    lapply(
+      bootstrap_output[!bootstrap_ok],
+      function(x) {
+        data.frame(
+          bootstrap = x$seed,
+          error = x$error,
+          stringsAsFactors = FALSE
+        )
+      }
+    )
+  )
+} else {
+  bootstrap_errors <- data.frame(
+    bootstrap = integer(),
+    error = character()
+  )
+}
+
+message(
+  sum(bootstrap_ok),
+  " valid bootstrap replicates; ",
+  sum(!bootstrap_ok),
+  " failed replicates."
+)
+
+head(bootstrap_errors)
+if (sum(bootstrap_ok) < 2L) {
+  stop("Fewer than two valid bootstrap replicates. Inspect bootstrap_errors before interpreting the analysis.")
+}
+if (any(!bootstrap_ok)) {
+  warning("Some bootstrap replicates failed; intervals are conditional on successful replicates. Inspect bootstrap_errors.")
+}
+```
+
+Check cell type alignment
+
+```{r}
+summarize_alignment_mass <- function(
+    bootstrap_output,
+    bootstrap_ok,
+    comparison
+) {
+  mass_list <- lapply(
+    bootstrap_output[bootstrap_ok],
+    function(x) {
+      x$alignment_mass
+    }
+  )
+
+  mass_array <- simplify2array(mass_list)
+
+  list(
+    mean = apply(mass_array, c(1, 2), mean),
+    median = apply(mass_array, c(1, 2), median),
+    lower = apply(mass_array, c(1, 2), stats::quantile, probs = 0.025),
+    upper = apply(mass_array,c(1, 2), stats::quantile, probs = 0.975),
+    array = mass_array
+  )
+}
+
+# 
+fiber_alignment_summary <- summarize_alignment_mass(
+  bootstrap_output,
+  bootstrap_ok,
+  comparison = "Fiber-Fiber"
+)
+fiber_given_query <- sweep(
+  fiber_alignment_summary$mean,
+  1,
+  pmax(rowSums(fiber_alignment_summary$mean), .Machine$double.eps),
+  "/"
+)
+pheatmap::pheatmap(
+  fiber_given_query,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = TRUE,
+  number_format = "%.2f",
+  border_color = NA,
+  main = paste0(
+    "Fiber–Fiber bootstrap alignment\n",
+    "P(", species_2, " state | ", species_1, " state)"
+  )
+)
+```
+
+#### Calculate confidence interval
+
+```{r Calculate confidence interval}
+scores_observed_ci <- scores_observed %>%
+  dplyr::mutate(
+    M_minus_E = Middle - Early,
+    M_minus_L = Middle - Late
+  )
+
+scores_bootstrap_ci <- scores_bootstrap %>%
+  dplyr::mutate(
+    M_minus_E = Middle - Early,
+    M_minus_L = Middle - Late
+  )
+
+bootstrap_ci <- scores_bootstrap_ci %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::summarise(
+    n_bootstrap = dplyr::n_distinct(bootstrap),
+
+    H_median = median(H, na.rm = TRUE),
+    H_ci_lower = unname(quantile(H, 0.025, na.rm = TRUE)),
+    H_ci_upper = unname(quantile(H, 0.975, na.rm = TRUE)),
+
+    M_minus_E_median = median(M_minus_E, na.rm = TRUE),
+    M_minus_E_ci_lower = unname(quantile(M_minus_E, 0.025, na.rm = TRUE)),
+    M_minus_E_ci_upper = unname(quantile(M_minus_E, 0.975, na.rm = TRUE)),
+
+    M_minus_L_median = median(M_minus_L, na.rm = TRUE),
+    M_minus_L_ci_lower = unname(quantile(M_minus_L, 0.025, na.rm = TRUE)),
+    M_minus_L_ci_upper = unname(quantile(M_minus_L, 0.975, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(
+    scores_observed_ci %>%
+      dplyr::select(
+        comparison,
+        H_observed = H,
+        M_minus_E_observed = M_minus_E,
+        M_minus_L_observed = M_minus_L
+      ),
+    by = "comparison"
+  ) %>%
+  dplyr::select(
+    comparison,
+    H_observed,
+    H_median,
+    H_ci_lower,
+    H_ci_upper,
+    M_minus_E_observed,
+    M_minus_E_ci_lower,
+    M_minus_E_ci_upper,
+    M_minus_L_observed,
+    M_minus_L_ci_lower,
+    M_minus_L_ci_upper,
+    n_bootstrap
+  )
+
+bootstrap_ci
+```
+
+#### Plot bootstrap hourglass scores
+
+```{r Plot bootstrap hourglass scores}
+p_bootstrap_H <- ggplot(
+  scores_bootstrap,
+  aes(x = H)
+) +
+  geom_histogram(
+    bins = 40
+  ) +
+  geom_vline(
+    data = scores_observed,
+    aes(xintercept = H),
+    linewidth = 1
+  ) +
+  theme_bw() +
+  labs(
+    x = "Bootstrap H",
+    y = "Counts",
+    title = NULL,
+    subtitle = sprintf("Observed H: %.2f", scores_observed$H),
+    caption = sprintf("CI: %.2f-%.2f", bootstrap_ci$H_ci_lower, bootstrap_ci$H_ci_upper)
+  )
+p_bootstrap_H
+```
+
+## Write key data
+
+Write one long CSV containing the observed scores and the complete permutation and bootstrap distributions. Both species are recorded explicitly; the legacy `sample_id` and `individual_id` fields identify the pair. A downstream biological-replicate analysis must account for any samples reused across pairs.
+
+```{r Prepare key data}
+pair_metadata <- list(
+  sample_id_1 = as.character(params$sample_id_1),
+  sample_id_2 = as.character(params$sample_id_2),
+  species_1 = species_1,
+  species_2 = species_2,
+  individual_id_1 = params$individual_id_1,
+  individual_id_2 = params$individual_id_2,
+  condition_1 = params$condition_1,
+  condition_2 = params$condition_2,
+  batch_1 = params$batch_1,
+  batch_2 = params$batch_2
+)
+sample_metadata <- list(
+  sample_id = paste(pair_metadata$sample_id_1, pair_metadata$sample_id_2, sep = "__vs__"),
+  individual_id = paste(pair_metadata$individual_id_1, pair_metadata$individual_id_2, sep = "__vs__"),
+  condition = paste(pair_metadata$condition_1, pair_metadata$condition_2, sep = "__vs__"),
+  batch = paste(pair_metadata$batch_1, pair_metadata$batch_2, sep = "__vs__")
+)
+
+observed_key <- scores_observed %>%
+  dplyr::transmute(
+    data_type = "observed",
+    replicate_id = "Observed",
+    seed = NA_integer_,
+    comparison,
+    Early,
+    Middle,
+    Late,
+    H
+  )
+
+permutation_key <- scores_perm %>%
+  dplyr::transmute(
+    data_type = "permutation",
+    replicate_id = permutation,
+    seed = as.integer(seed),
+    comparison,
+    Early,
+    Middle,
+    Late,
+    H
+  )
+
+bootstrap_key <- scores_bootstrap %>%
+  dplyr::transmute(
+    data_type = "bootstrap",
+    replicate_id = paste0("Bootstrap-", bootstrap),
+    seed = as.integer(bootstrap),
+    comparison,
+    Early,
+    Middle,
+    Late,
+    H
+  )
+
+key_data <- dplyr::bind_rows(
+  observed_key,
+  permutation_key,
+  bootstrap_key,
+) %>%
+  dplyr::mutate(
+    sample_id = sample_metadata$sample_id,
+    individual_id = sample_metadata$individual_id,
+    condition = sample_metadata$condition,
+    batch = sample_metadata$batch,
+    !!!pair_metadata,
+    focal_species = paste(focal_species, collapse = ","),
+    middle_cell_types = paste(middle_cell_types, collapse = ";"),
+    middle_fraction = middle_fraction,
+    query_species = species_1,
+    metric = as.character(params$metric),
+    M_minus_E = Middle - Early,
+    M_minus_L = Middle - Late,
+    n_cells = ncol(seurat_obj_1) + ncol(seurat_obj_2),
+    n_cells_1 = ncol(seurat_obj_1),
+    n_cells_2 = ncol(seurat_obj_2),
+    n_genes = length(genes), # Legacy column: the number of orthogroups.
+    n_orthogroups = length(genes),
+    n_bins = n_bins,
+    n_permutation = n_permutation,
+    n_bootstrap_requested = n_bootstrap,
+    n_bootstrap_valid = sum(bootstrap_ok),
+    n_bootstrap_failed = sum(!bootstrap_ok)
+  ) %>%
+  dplyr::select(
+    sample_id,
+    individual_id,
+    condition,
+    batch,
+    dplyr::all_of(names(pair_metadata)),
+    focal_species, middle_cell_types, middle_fraction, query_species,
+    metric,
+    data_type,
+    replicate_id,
+    seed,
+    comparison,
+    Early,
+    Middle,
+    Late,
+    M_minus_E,
+    M_minus_L,
+    H,
+    n_cells, n_cells_1, n_cells_2,
+    n_genes, n_orthogroups,
+    n_bins,
+    n_permutation,
+    n_bootstrap_requested,
+    n_bootstrap_valid,
+    n_bootstrap_failed
+  )
+
+head(key_data)
+```
+
+Write a concise sample-pair summary in addition to the complete long table.
+
+```{r Prepare key summary}
+branch_key_summary <- scores_observed_ci %>%
+  dplyr::select(
+    comparison,
+    Early,
+    Middle,
+    Late,
+    H_observed = H,
+    M_minus_E_observed = M_minus_E,
+    M_minus_L_observed = M_minus_L
+  ) %>%
+  dplyr::left_join(
+    permutation_results %>%
+      dplyr::select(
+        comparison,
+        p_permutation = p_empirical,
+        p_holm,
+        null_mean,
+        null_sd
+      ),
+    by = "comparison"
+  ) %>%
+  dplyr::left_join(
+    bootstrap_ci %>%
+      dplyr::select(
+        comparison,
+        H_bootstrap_median = H_median,
+        H_ci_lower,
+        H_ci_upper,
+        n_bootstrap
+      ),
+    by = "comparison"
+  )
+
+
+key_summary <- dplyr::bind_rows(
+  branch_key_summary,
+) %>%
+  dplyr::mutate(
+    sample_id = sample_metadata$sample_id,
+    individual_id = sample_metadata$individual_id,
+    condition = sample_metadata$condition,
+    batch = sample_metadata$batch,
+    !!!pair_metadata,
+    focal_species = paste(focal_species, collapse = ","),
+    middle_cell_types = paste(middle_cell_types, collapse = ";"),
+    middle_fraction = middle_fraction,
+    query_species = species_1,
+    metric = as.character(params$metric),
+    n_cells = ncol(seurat_obj_1) + ncol(seurat_obj_2),
+    n_cells_1 = ncol(seurat_obj_1),
+    n_cells_2 = ncol(seurat_obj_2),
+    n_genes = length(genes), # Legacy column: the number of orthogroups.
+    n_orthogroups = length(genes),
+    n_bins = n_bins,
+    n_permutation = n_permutation,
+    n_bootstrap_requested = n_bootstrap,
+    n_bootstrap_valid = sum(bootstrap_ok),
+    n_bootstrap_failed = sum(!bootstrap_ok)
+  ) %>%
+  dplyr::select(
+    sample_id,
+    individual_id,
+    condition,
+    batch,
+    dplyr::all_of(names(pair_metadata)),
+    focal_species, middle_cell_types, middle_fraction, query_species,
+    metric,
+    comparison,
+    Early,
+    Middle,
+    Late,
+    M_minus_E_observed,
+    M_minus_L_observed,
+    H_observed,
+    p_permutation,
+    p_holm,
+    null_mean,
+    null_sd,
+    H_bootstrap_median,
+    H_ci_lower,
+    H_ci_upper,
+    n_cells, n_cells_1, n_cells_2,
+    n_genes, n_orthogroups,
+    n_bins,
+    n_permutation,
+    n_bootstrap_requested,
+    n_bootstrap_valid,
+    n_bootstrap_failed
+  )
+
+key_summary
+```
+
+```{r Write key data CSVs}
+dir.create(
+  dirname(params$path_key_data),
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+dir.create(
+  dirname(params$path_key_summary),
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+write.csv(
+  key_data,
+  file = params$path_key_data,
+  row.names = FALSE,
+  quote = TRUE
+)
+write.csv(
+  key_summary,
+  file = params$path_key_summary,
+  row.names = FALSE,
+  quote = TRUE
+)
+
+path_orthogroups_used <- file.path(
+  dirname(params$path_key_summary),
+  paste0(tools::file_path_sans_ext(basename(params$path_key_summary)), "-orthogroups.csv")
+)
+write.csv(orth_expression, path_orthogroups_used, row.names = FALSE, quote = TRUE)
+```
+
+## Save workspace image
+
+```{r Save workspace image}
+dir.create(
+  params$path_image %>% dirname, 
+  showWarnings = FALSE, 
+  recursive = TRUE
+)
+save.image(file = params$path_image)
+```
+
+Session info
+
+```{r Print session info}
+sessionInfo()
+```
+
+# For Debug
+
+```{r}
+library(patchwork)
+p_large_patch <- wrap_plots(
+  list(
+    p_cluster_1,
+    p_pt_1, 
+    p_cluster_2,
+    p_pt_2, 
+    p_comp, 
+    p_comp_lineage,
+    p_path_L1,
+    
+    p_marker_spe1 + labs(title = NULL, subtitle = "Middle marker"),
+    p_marker_spe2 + labs(title = NULL, subtitle = "Middle marker"),
+    p_alinged_similarity1,
+    p_perm_similarity,
+    p_permutation_H,
+    p_boot_similarity,
+    p_bootstrap_H
+  ),
+  nrow = 2,
+  ncol = 7
+) + 
+  plot_layout(guides = "collect") & 
+  theme(
+    legend.position = "none",
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    legend.background = element_blank(),
+    legend.box.background = element_blank()
+  ) +
+  theme(
+    plot.background = element_blank()
+  )
+  
+dir.create(
+  dirname(params$path_debug_figure), 
+  recursive = TRUE
+)
+ggsave(
+  p_large_patch,
+  file = params$path_debug_figure,
+  height = 8,
+  width = 20,
+  units = "in",
+  dpi = 600
+)
+```

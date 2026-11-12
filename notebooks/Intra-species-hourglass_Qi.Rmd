@@ -22,10 +22,10 @@ params:
   open.end: TRUE
   window_mid: 2
   metric: spearman
-  path_key_data: test/Hourglass/intra_species_hourglass_Qi/ptr_bmkgene_4-7/spearman/key_data.csv
-  path_key_summary: test/Hourglass/intra_species_hourglass_Qi/ptr_bmkgene_4-7/spearman/key_summary.csv
-  path_image: test/Hourglass/intra_species_hourglass_Qi/ptr_bmkgene_4-7/spearman/Rdata.rds
-  path_debug_figure: test/Hourglass/intra_species_hourglass_Qi/debug_figure/ptr_bmkgene_4-7-spearman.png
+  path_key_data: test/Hourglass/Intra-species-hourglass_Qi/ptr_bmkgene_4-7/spearman/key_data.csv
+  path_key_summary: test/Hourglass/Intra-species-hourglass_Qi/ptr_bmkgene_4-7/spearman/key_summary.csv
+  path_image: test/Hourglass/Intra-species-hourglass_Qi/ptr_bmkgene_4-7/spearman/Rdata.rds
+  path_debug_figure: test/Hourglass/Intra-species-hourglass_Qi/debug_figure/ptr_bmkgene_4-7-spearman.png
 output:
   html_document:
     df_print: paged
@@ -258,7 +258,7 @@ Plot cell composition per lineage
 
 ```{r}
 cell_type_composition <- table(seurat_obj$cell_label)
-composition <- rbind(
+composition_raw <- rbind(
   transform(as.data.frame(cell_type_composition[lineage_cell_types$Lineage1]), lineage = "Fusiform"),
   transform(as.data.frame(cell_type_composition[lineage_cell_types$Lineage2]), lineage = "Ray")
 ) %>% mutate(
@@ -266,7 +266,7 @@ composition <- rbind(
 )
 
 p_comp_lineage <- ggplot(
-  composition, 
+  composition_raw, 
   aes(x = lineage, y = Freq, fill = cell_type)
 ) +
   geom_col(position = "fill") +
@@ -803,7 +803,7 @@ ray_keep <- as.character(seurat_obj$cell_label) %in% ray_lineage &
 ray_pt <- pseudotime[ray_keep, 2]
 
 # get permutation seeds
-set.seed(as.integer(params$seed))
+set.seed(seed_from_id(params$sample_id))
 permutation_seeds <- sample.int(
   n = .Machine$integer.max,
   size = n_permutation,
@@ -1148,7 +1148,7 @@ n_bins <- as.integer(params$n_bins)
 metric <- as.character(params$metric)
 
 # Use a different reproducible stream from the permutation seeds.
-set.seed(as.integer(params$seed) + 1L)
+set.seed(seed_from_id(params$sample_id) + 1L)
 bootstrap_seeds <- sample.int(
   n = .Machine$integer.max,
   size = n_bootstrap,
@@ -1662,6 +1662,18 @@ write.csv(
 )
 ```
 
+## Save workspace image
+
+```{r Save workspace image}
+dir.create(
+  params$path_image %>% dirname, 
+  showWarnings = FALSE, 
+  recursive = TRUE
+)
+save.image(file = params$path_image)
+```
+
+
 Session info
 
 ```{r Print session info}
@@ -1705,12 +1717,13 @@ p_large_patch <- wrap_plots(
     plot.background = element_blank()
   )
   
-dir.create(params$path_debug_figure, recursive = TRUE)
+dir.create(
+  dirname(params$path_debug_figure), 
+  recursive = TRUE
+)
 ggsave(
   p_large_patch,
-  file = file.path(
-    params$path_debug_figure
-  ),
+  file = params$path_debug_figure,
   height = 8,
   width = 20,
   units = "in",

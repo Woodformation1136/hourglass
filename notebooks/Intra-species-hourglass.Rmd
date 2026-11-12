@@ -1,12 +1,12 @@
 ---
 title: "Intra-species hourglass analysis"
 params:
-  sample_id: ptr_tenx_batch1
-  individual_id: ptr_tenx_batch1
+  sample_id: egr_nextseq_batch1
+  individual_id: egr_nextseq_batch1
   condition: control
   batch: batch1
-  path_10x: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr
-  path_cell_label: outputs/Hourglass/transfer_cell_label/ptr_tenx_batch1/cell_label.csv
+  path_10x: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr
+  path_cell_label: outputs/Hourglass/transfer_cell_label/egr_nextseq_batch1/cell_label.csv
   path_fusiform_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Fusiform Early Precursor.csv
   path_ray_middle_markers: test/Hourglass/Consensus_cell_labelling_ptr/Ray Precursor.csv
   # path_ray_early_markers: test/Hourglass/Consensus_cell_labelling_ptr/Ray Organizer.csv
@@ -22,10 +22,10 @@ params:
   open.begin: TRUE
   open.end: TRUE
   metric: spearman
-  path_key_data: test/Hourglass/intra_species_hourglass/ptr_tenx_batch1/spearman/ptr_tenx_batch1-spearman-key_data.csv
-  path_key_summary: test/Hourglass/intra_species_hourglass/ptr_tenx_batch1/spearman/ptr_tenx_batch1-spearman-key_summary.csv
-  path_image: test/Hourglass/intra_species_hourglass/ptr_tenx_batch1/spearman/ptr_tenx_batch1-spearman.rdata
-  path_debug_figure: test/Hourglass/intra_species_hourglass/debug_figure/ptr_tenx_batch1-spearman.png
+  path_key_data: test/Hourglass/intra_species_hourglass/egr_nextseq_batch1/spearman/egr_nextseq_batch1-spearman-key_data.csv
+  path_key_summary: test/Hourglass/intra_species_hourglass/egr_nextseq_batch1/spearman/egr_nextseq_batch1-spearman-key_summary.csv
+  path_image: test/Hourglass/intra_species_hourglass/egr_nextseq_batch1/spearman/egr_nextseq_batch1-spearman.rdata
+  path_debug_figure: test/Hourglass/intra_species_hourglass/debug_figure/egr_nextseq_batch1-spearman.png
 output:
   html_document:
     df_print: paged
@@ -264,7 +264,7 @@ Proportion of cells in each lineage
 
 ```{r}
 cell_type_composition <- table(seurat_obj$cell_label)
-composition <- rbind(
+composition_raw <- rbind(
   transform(as.data.frame(cell_type_composition[lineage_cell_types$Lineage1]), lineage = "Fusiform"),
   transform(as.data.frame(cell_type_composition[lineage_cell_types$Lineage2]), lineage = "Ray")
 ) %>% mutate(
@@ -272,7 +272,7 @@ composition <- rbind(
 )
 
 p_comp_lineage <- ggplot(
-  composition, 
+  composition_raw, 
   aes(x = lineage, y = Freq, fill = cell_type)
 ) +
   geom_col(position = "fill") +
@@ -473,15 +473,15 @@ p_comp <- ggplot(composition, aes(x = bin, y = Freq, fill = cell_type)) +
     fill = "Cell type"
   )
 
-save_fig(
-  p_comp,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("composition_%s.svg", params$sample_id) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_comp,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("composition_%s.svg", params$sample_id) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_comp
 ```
@@ -615,24 +615,24 @@ p_fuep_marker <- ggplot(
     
   )
 
-save_fig(
-  p_ray_marker,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("marker_RP_%s.svg", params$sample_id) 
-  ),
-  height = 4,
-  width = 5
-)
-save_fig(
-  p_fuep_marker,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("marker_FuEP_%s.svg", params$sample_id) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_ray_marker,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("marker_RP_%s.svg", params$sample_id) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
+# save_fig(
+#   p_fuep_marker,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("marker_FuEP_%s.svg", params$sample_id) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_ray_marker
 p_fuep_marker
@@ -786,15 +786,15 @@ p_path_L1 <- plot_dtw_path(
   title = "Ray vs Fusiform-FuIP DTW alignment\n(%s)" %>% sprintf(params$metric)
 )
 
-save_fig(
-  p_path_L1,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("path_%s_%s.svg", params$sample_id, params$metric) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_path_L1,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("path_%s_%s.svg", params$sample_id, params$metric) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_path_L1
 ```
@@ -849,15 +849,15 @@ p_alinged_similarity1 <- ggplot(
       y = sprintf("Transcriptomic similarity (%s)", params$metric)
   )
 
-save_fig(
-  p_alinged_similarity1,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("aligned_similarity_%s_%s.svg", params$sample_id, params$metric) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_alinged_similarity1,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("aligned_similarity_%s_%s.svg", params$sample_id, params$metric) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_alinged_similarity1
 ```
@@ -915,7 +915,7 @@ fu_keep <- grepl("1", branch_id) & is.finite(pseudotime[, 1])
 fu_pt <- pseudotime[fu_keep, 2]
 
 # get permutation seeds
-set.seed(42)
+set.seed(seed_from_id(params$sample_id))
 permutation_seeds <- sample.int(
   n = .Machine$integer.max,
   size = n_permutation,
@@ -1139,15 +1139,15 @@ p_perm_similarity <- ggplot(
     y = params$metric
   )
 
-save_fig(
-  p_perm_similarity,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("permutation_similarity_%s_%s.svg", params$sample_id, params$metric) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_perm_similarity,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("permutation_similarity_%s_%s.svg", params$sample_id, params$metric) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_perm_similarity
 ```
@@ -1224,15 +1224,15 @@ p_permutation_H <- ggplot(
     subtitle = sprintf("P = %.4f", permutation_results$p_empirical)
   )
 
-save_fig(
-  p_permutation_H,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("permutation_H_%s_%s.svg", params$sample_id, params$metric) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_permutation_H,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("permutation_H_%s_%s.svg", params$sample_id, params$metric) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_permutation_H
 ```
@@ -1424,7 +1424,7 @@ n_bins <- as.integer(params$n_bins)
 metric <- as.character(params$metric)
 
 # get bootstrap seeds
-set.seed(42)
+set.seed(seed_from_id(params$sample_id) + 1)
 bootstrap_seeds <- sample.int(
   n = .Machine$integer.max,
   size = n_bootstrap,
@@ -1708,15 +1708,15 @@ p_bootstrap_H <- ggplot(
     caption = sprintf("CI: %.2f-%.2f", bootstrap_ci$H_ci_lower, bootstrap_ci$H_ci_upper)
   )
 
-save_fig(
-  p_bootstrap_H,
-  file = file.path(
-    params$path_debug_figure,
-    sprintf("bootstrap_H_%s_%s.svg", params$sample_id, params$metric) 
-  ),
-  height = 4,
-  width = 5
-)
+# save_fig(
+#   p_bootstrap_H,
+#   file = file.path(
+#     params$path_debug_figure,
+#     sprintf("bootstrap_H_%s_%s.svg", params$sample_id, params$metric) 
+#   ),
+#   height = 4,
+#   width = 5
+# )
 
 p_bootstrap_H
 ```
@@ -1982,12 +1982,14 @@ p_large_patch <- wrap_plots(
   theme(
     plot.background = element_blank()
   )
-  
+
+dir.create(
+  dirname(params$path_debug_figure), 
+  recursive = TRUE
+)
 ggsave(
   p_large_patch,
-  file = file.path(
-    params$path_debug_figure
-  ),
+  file = params$path_debug_figure,
   height = 8,
   width = 20,
   units = "in",
