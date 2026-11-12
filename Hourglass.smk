@@ -1,8 +1,16 @@
 from utils import functions
-# N_PERMUTATIONS = 9999
-# N_BOOTSTRAPS = 1000
-N_PERMUTATIONS = 99
-N_BOOTSTRAPS = 100
+N_PERMUTATIONS = 9999
+N_BOOTSTRAPS = 1000
+# N_PERMUTATIONS = 999
+# N_BOOTSTRAPS = 100
+
+wildcard_constraints:
+    sample="(lch|ptr|egr|tar)_(tenx|nextseq)_(batch|tsv)[0-9]",
+    sample1="lch_(tenx|nextseq)_(batch|tsv)[0-9]",
+    sample2="(ptr|egr|tar)_(tenx|nextseq)_(batch|tsv)[0-9]",
+    sample_qi="ptr_bmkgene_(1-7|4-7|3-7)",
+    intra_workflow="Intra-species-hourglass(_protoplasting-excluded|_protoplasting-regressed)?",
+    inter_workflow="Inter-species-hourglass(_protoplasting-excluded|_protoplasting-regressed)?"
 
 def ref_query_map(sample):
     mapping = {
@@ -17,7 +25,9 @@ def ref_query_map(sample):
         "ptr_tenx_tsv3": "ptr_tenx_batch1",
         "ptr_tenx_tsv4": "ptr_tenx_batch1",
         "ptr_tenx_tsv5": "ptr_tenx_batch1",
-        "tar_nextseq_batch1": "tar_nextseq_batch1"
+        "tar_nextseq_batch1": "tar_nextseq_batch1",
+        "tar_nextseq_batch2": "tar_nextseq_batch1",
+        "tar_tenx_batch1": "tar_nextseq_batch1"
     }
     try:
         return mapping[sample]
@@ -136,33 +146,38 @@ rule transfer_cell_label:
 
 rule intra_species_hourglass:
     container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
-    threads: 76
+    threads: 38
     resources:
-        mem_mb=400000,
+        mem_mb=200000,
         runtime=1200
     input:
-        rmd="notebooks/Intra-species-hourglass.Rmd",
-        path_10x=lambda wildcards: functions.query(config["samples"], "name", wildcards.sample_branched)["results_old"]["10x"],
-        path_cell_label="outputs/Hourglass/transfer_cell_label/{sample_branched}/cell_label.csv",
+        rmd="notebooks/{intra_workflow}.Rmd",
+        rscripts=[
+            "notebooks/scripts/hourglass_analysis.R",
+            "notebooks/scripts/parallel_processing.R"
+        ],
+        path_10x=lambda wildcards: functions.query(config["samples"], "name", wildcards.sample)["results_old"]["10x"],
+        path_cell_label="outputs/Hourglass/transfer_cell_label/{sample}/cell_label.csv",
     output:
-        outdir=directory("outputs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}"),
-        html="outputs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}/{sample_branched}-{metric}.html",
-        rdata="outputs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}/{sample_branched}-{metric}.rdata",
-        key_data="outputs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}/{sample_branched}-{metric}-key_data.csv",
-        key_summary="outputs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}/{sample_branched}-{metric}-key_summary.csv"
+        outdir=directory("outputs/Hourglass/{intra_workflow}/{sample}/{metric}"),
+        html="outputs/Hourglass/{intra_workflow}/{sample}/{metric}/{sample}-{metric}.html",
+        rdata="outputs/Hourglass/{intra_workflow}/{sample}/{metric}/{sample}-{metric}.rdata",
+        key_data="outputs/Hourglass/{intra_workflow}/{sample}/{metric}/{sample}-{metric}-key_data.csv",
+        key_summary="outputs/Hourglass/{intra_workflow}/{sample}/{metric}/{sample}-{metric}-key_summary.csv"
     params:
-        individual_id="{sample_branched}", # currently, individual_id is the same as sample name.
+        individual_id="{sample}", # currently, individual_id is the same as sample name.
         condition="control", # currently, condition is set to control for all samples.
-        batch=lambda wildcards: wildcards.sample_branched.split("_")[-1], # currently, batch is set to the last part of the sample name.
+        batch=lambda wildcards: wildcards.sample.split("_")[-1], # currently, batch is set to the last part of the sample name.
         keep_only_transfer_pass="TRUE", # currently, only keep cells that pass the transfer cell label step.
         n_bins=10,
         n_permutation=N_PERMUTATIONS,
         n_bootstrap=N_BOOTSTRAPS,
-        window_dtw=0.4,
+        window_dtw=0.5,
         metric="{metric}",
-        path_intermediate="outputs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}/rmd_intermediate/"
+        path_intermediate="outputs/Hourglass/{intra_workflow}/{sample}/{metric}/rmd_intermediate/",
+        path_debug_figure="test-Hourglass/{intra_workflow}/mean/{sample}-{metric}.png"
     log:
-        "logs/Hourglass/intra_species_hourglass/{sample_branched}/{metric}.log"
+        "logs/Hourglass/{intra_workflow}/{sample}/{metric}.log"
     shell:
         """
         Rscript -e "rmarkdown::render(
@@ -174,7 +189,7 @@ rule intra_species_hourglass:
             clean = TRUE,
             envir = new.env(parent = globalenv()),
             params = list(
-                sample_id = '{wildcards.sample_branched}',
+                sample_id = '{wildcards.sample}',
                 individual_id = '{params.individual_id}',
                 condition = '{params.condition}',
                 batch = '{params.batch}',
@@ -189,27 +204,33 @@ rule intra_species_hourglass:
                 metric = '{params.metric}',
                 path_key_data = '{output.key_data}',
                 path_key_summary = '{output.key_summary}',
-                path_image = '{output.rdata}'
+                path_image = '{output.rdata}',
+                path_debug_figure = '{params.path_debug_figure}'
             )
         )" > {log} 2>&1 
         """
 
 rule intra_species_hourglass_qi:
     container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
-    threads: 76
+    threads: 38
     resources:
-        mem_mb=400000,
+        mem_mb=200000,
         runtime=1200
     input:
         rmd="notebooks/Intra-species-hourglass_Qi.Rmd",
+        rscripts=[
+            "notebooks/scripts/hourglass_analysis.R",
+            "notebooks/scripts/parallel_processing.R"
+        ],
         path_rdata_in="rawdata/Qi_spatial/stall_fin_cnameChecked.Rdata",
         path_ray_middle_markers="test/Hourglass/Consensus_cell_labelling_ptr/Ray Precursor.csv",
         path_orthogroup="outputs/ortholog_info.csv"
     output:
-        outdir=directory("outputs/Hourglass/intra_species_hourglass/{sample_qi}/{metric}"),
-        html="outputs/Hourglass/intra_species_hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}.html",
-        key_data="outputs/Hourglass/intra_species_hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}-key_data.csv",
-        key_summary="outputs/Hourglass/intra_species_hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}-key_summary.csv"
+        outdir=directory("outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}"),
+        html="outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}.html",
+        rdata="outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}.rdata",
+        key_data="outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}-key_data.csv",
+        key_summary="outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}-key_summary.csv"
     params:
         individual_id="{sample_qi}", # currently, individual_id is the same as sample name.
         condition="control", # currently, all samples were from control conditions.
@@ -218,11 +239,12 @@ rule intra_species_hourglass_qi:
         n_bins=10,
         n_permutation=N_PERMUTATIONS,
         n_bootstrap=N_BOOTSTRAPS,
-        window_dtw=0.2,
+        window_dtw=0.5,
         metric="{metric}",
-        path_intermediate="outputs/Hourglass/intra_species_hourglass/{sample_qi}/{metric}/rmd_intermediate/"
+        path_intermediate="outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}/rmd_intermediate/",
+        path_debug_figure="test-Hourglass/Intra-species-hourglass_Qi/mean/{sample_qi}-{metric}.png"
     log:
-        "logs/Hourglass/intra_species_hourglass/{sample_qi}/{metric}.log"
+        "logs/Hourglass/Intra-species-hourglass_Qi/{sample_qi}/{metric}.log"
     shell:
         """
         Rscript -e "rmarkdown::render(
@@ -251,31 +273,37 @@ rule intra_species_hourglass_qi:
                 window_dtw = {params.window_dtw},
                 metric = '{params.metric}',
                 path_key_data = '{output.key_data}',
-                path_key_summary = '{output.key_summary}'
+                path_key_summary = '{output.key_summary}',
+                path_image = '{output.rdata}',
+                path_debug_figure = '{params.path_debug_figure}'
             )
         )" > {log} 2>&1 
         """
 
 rule inter_species_hourglass:
     container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
-    threads: 60
+    threads: 30
     resources:
-        mem_mb=400000,
+        mem_mb=190000,
         runtime=1200
     input:
-        rmd="notebooks/Inter-species-hourglass (1).Rmd",
+        rmd="notebooks/{inter_workflow}.Rmd",
+        rscripts=[
+            "notebooks/scripts/hourglass_analysis.R",
+            "notebooks/scripts/parallel_processing.R"
+        ],
         path_10x_1=lambda wildcards: functions.query(config["samples"], "name", wildcards.sample1)["results_old"]["10x"],
         path_10x_2=lambda wildcards: functions.query(config["samples"], "name", wildcards.sample2)["results_old"]["10x"],
         path_cell_label_1="outputs/Hourglass/transfer_cell_label/{sample1}/cell_label.csv",
         path_cell_label_2="outputs/Hourglass/transfer_cell_label/{sample2}/cell_label.csv",
         orthogroup_table="outputs/ortholog_info.csv"
     output:
-        outdir=directory("outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}"),
-        html="outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}.html",
-        rdata="outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}.rdata",
-        key_data="outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_data.csv",
-        key_summary="outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_summary.csv",
-        orthogroups="outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_summary-orthogroups.csv"
+        outdir=directory("outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}"),
+        html="outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}.html",
+        rdata="outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}.rdata",
+        key_data="outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_data.csv",
+        key_summary="outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_summary.csv",
+        orthogroups="outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_summary-orthogroups.csv"
     params:
         individual_id_1="{sample1}",
         individual_id_2="{sample2}",
@@ -287,11 +315,12 @@ rule inter_species_hourglass:
         n_bins=10,
         n_permutation=N_PERMUTATIONS,
         n_bootstrap=N_BOOTSTRAPS,
-        window_dtw=0.1,
+        window_dtw=0.5,
         metric="{metric}",
-        path_intermediate="outputs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}/rmd_intermediate/"
+        path_intermediate="outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/rmd_intermediate/",
+        path_debug_figure="test-Hourglass/{inter_workflow}/mean/{sample1}-{sample2}-{metric}.png"
     log:
-        "logs/Hourglass/inter_species_hourglass/{sample1}/{sample2}/{metric}.log"
+        "logs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}.log"
     shell:
         """
         Rscript -e "
@@ -327,7 +356,237 @@ rule inter_species_hourglass:
                 metric = '{params.metric}',
                 path_key_data = '{output.key_data}',
                 path_key_summary = '{output.key_summary}',
-                path_image = '{output.rdata}'
+                path_image = '{output.rdata}',
+                path_debug_figure = '{params.path_debug_figure}'
             )
         )" > {log:q} 2>&1
+        """
+
+
+# ------------------------------------------------------------------------------
+rule intra_species_summary:
+    container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
+    threads: 1
+    resources:
+        mem_mb=4000,
+        runtime=15
+    input:
+        rmd="notebooks/Intra-species-summary.Rmd",
+        key_data=expand(
+            "outputs/Hourglass/{intra_workflow}/{sample}/{metric}/{sample}-{metric}-key_data.csv",
+            intra_workflow=lambda wildcards: wildcards.intra_workflow,
+            sample=[
+                "egr_tenx_batch1",
+                "egr_nextseq_batch1",
+                "egr_nextseq_batch2",
+                "lch_tenx_batch1",
+                "ptr_tenx_batch1",
+                "ptr_tenx_batch2",
+                "ptr_tenx_tsv1",
+                "ptr_tenx_tsv2",
+                "ptr_tenx_tsv3",
+                "ptr_tenx_tsv4",
+                "ptr_tenx_tsv5",
+            ],
+            metric=[
+                "spearman",
+                "pearson",
+                "Jensen-Shannon"
+            ]
+        )
+    output:
+        summary="outputs/Hourglass-intra/{intra_workflow}/summary.csv",
+        html="outputs/Hourglass-intra/{intra_workflow}/summary.html",
+        samples="outputs/Hourglass-intra/{intra_workflow}/sample_summary.csv",
+        null="outputs/Hourglass-intra/{intra_workflow}/joint_null.csv",
+        audit="outputs/Hourglass-intra/{intra_workflow}/audit.csv",
+        filenames="outputs/Hourglass-intra/{intra_workflow}/filenames.txt"
+    log:
+        "logs/Hourglass-intra/{intra_workflow}/summary.log"
+    shell:
+        r"""
+        mkdir -p "$(dirname {log:q})" "$(dirname {output.filenames:q})"
+        # Store canonical paths, one per line, for easy Rmd debugging.
+        printf '%s\n' {input.key_data:q} | while IFS= read -r file; do
+            echo "$file"
+        done > {output.filenames:q}
+
+        Rscript -e "
+            project_dir <- getwd()
+            input_rmd <- '{input.rmd}'
+            manifest_path <- '{output.filenames}'
+            summary_path <- file.path(project_dir, '{output.summary}')
+            output_html <- basename('{output.html}')
+            outdir <- dirname(summary_path)
+            intermediates <- file.path(outdir, 'rmd_intermediate')
+            dir.create(intermediates, recursive = TRUE, showWarnings = FALSE)
+
+            render_params <- list(
+                path_filenames = manifest_path,
+                path_summary = summary_path,
+                analysis_id = '{wildcards.intra_workflow}'
+            )
+            rmarkdown::render(
+                input = input_rmd,
+                output_dir = outdir,
+                output_file = output_html,
+                intermediates_dir = intermediates,
+                knit_root_dir = project_dir,
+                clean = TRUE,
+                envir = new.env(parent = globalenv()),
+                params = render_params
+            )
+        " > {log:q} 2>&1
+        """
+
+
+rule inter_species_summary:
+    container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
+    threads: 1
+    resources:
+        mem_mb=4000,
+        runtime=15
+    wildcard_constraints:
+        inter_workflow="[^/]+"
+    input:
+        rmd="notebooks/Inter-species-summary.Rmd",
+        key_data=expand(
+            "outputs/Hourglass/{inter_workflow}/{sample1}/{sample2}/{metric}/{sample1}-{sample2}-{metric}-key_data.csv",
+            inter_workflow=lambda wildcards: wildcards.inter_workflow,
+            sample1=["lch_tenx_batch1"], 
+            sample2=[
+                "egr_nextseq_batch1",
+                "egr_nextseq_batch2",
+                "egr_tenx_batch1",
+                "ptr_tenx_batch1",
+                "ptr_tenx_batch2",
+                "ptr_tenx_tsv1",
+                "ptr_tenx_tsv2",
+                "ptr_tenx_tsv3",
+                "ptr_tenx_tsv4",
+                "ptr_tenx_tsv5"
+            ], 
+            metric=[
+                "spearman",
+                "pearson",
+                "Jensen-Shannon"
+            ]
+        )
+    output:
+        summary="outputs/Hourglass-inter/{inter_workflow}/summary.csv",
+        html="outputs/Hourglass-inter/{inter_workflow}/summary.html",
+        pairs="outputs/Hourglass-inter/{inter_workflow}/pair_summary.csv",
+        null="outputs/Hourglass-inter/{inter_workflow}/joint_null.csv",
+        audit="outputs/Hourglass-inter/{inter_workflow}/audit.csv",
+        filenames="outputs/Hourglass-inter/{inter_workflow}/filenames.txt"
+    params:
+        shared_query_mode="bonferroni"
+    log:
+        "logs/Hourglass-inter/{inter_workflow}/summary.log"
+    shell:
+        r"""
+        mkdir -p "$(dirname {log:q})" "$(dirname {output.filenames:q})"
+        # Store canonical paths, one per line, for easy Rmd debugging.
+        printf '%s\n' {input.key_data:q} | while IFS= read -r file; do
+            echo "$file"
+        done > {output.filenames:q}
+
+        Rscript -e "
+            project_dir <- normalizePath(getwd(), mustWork = TRUE)
+            input_rmd <- normalizePath('{input.rmd}', mustWork = TRUE)
+            manifest_path <- normalizePath('{output.filenames}', mustWork = TRUE)
+            summary_path <- file.path(project_dir, '{output.summary}')
+            output_html <- basename('{output.html}')
+            outdir <- dirname(summary_path)
+            intermediates <- file.path(outdir, 'rmd_intermediate')
+            dir.create(intermediates, recursive = TRUE, showWarnings = FALSE)
+
+            render_params <- list(
+                path_filenames = manifest_path,
+                path_summary = summary_path,
+                analysis_id = '{wildcards.inter_workflow}',
+                shared_query_mode = '{params.shared_query_mode}'
+            )
+            rmarkdown::render(
+                input = input_rmd,
+                output_dir = outdir,
+                output_file = output_html,
+                intermediates_dir = intermediates,
+                knit_root_dir = project_dir,
+                clean = TRUE,
+                envir = new.env(parent = globalenv()),
+                params = render_params
+            )
+        " > {log:q} 2>&1
+        """
+
+
+rule qi_hourglass_summary:
+    container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
+    threads: 1
+    resources:
+        mem_mb=4000,
+        runtime=15
+    input:
+        rmd="notebooks/Qi-hourglass-summary.Rmd",
+        key_data=expand(
+            "outputs/Hourglass/Intra-species-hourglass/{sample_qi}/{metric}/{sample_qi}-{metric}-key_data.csv",
+            sample_qi=[
+                "ptr_bmkgene_1-7",
+                "ptr_bmkgene_3-7",
+                "ptr_bmkgene_4-7"
+            ],
+            metric=[
+                "spearman",
+                "pearson",
+                "Jensen-Shannon"
+            ]
+        )
+    output:
+        summary="outputs/Hourglass-Qi/summary.csv",
+        html="outputs/Hourglass-Qi/summary.html",
+        samples="outputs/Hourglass-Qi/sample_summary.csv",
+        null="outputs/Hourglass-Qi/joint_null.csv",
+        audit="outputs/Hourglass-Qi/audit.csv",
+        filenames="outputs/Hourglass-Qi/filenames.txt"
+    params:
+        analysis_id="Intra-species-hourglass_Qi",
+        sample_prefix="ptr_bmkgene"
+    log:
+        "logs/Hourglass-Qi/Intra-species-hourglass/summary_qi.log"
+    shell:
+        r"""
+        mkdir -p "$(dirname {log:q})" "$(dirname {output.filenames:q})"
+        # Store canonical paths, one per line, for easy Rmd debugging.
+        printf '%s\n' {input.key_data:q} | while IFS= read -r file; do
+            echo "$file"
+        done > {output.filenames:q}
+
+        Rscript -e "
+            project_dir <- normalizePath(getwd(), mustWork = TRUE)
+            input_rmd <- normalizePath('{input.rmd}', mustWork = TRUE)
+            manifest_path <- normalizePath('{output.filenames}', mustWork = TRUE)
+            summary_path <- file.path(project_dir, '{output.summary}')
+            output_html <- basename('{output.html}')
+            outdir <- dirname(summary_path)
+            intermediates <- file.path(outdir, 'rmd_intermediate')
+            dir.create(intermediates, recursive = TRUE, showWarnings = FALSE)
+
+            render_params <- list(
+                path_filenames = manifest_path,
+                path_summary = summary_path,
+                analysis_id = '{params.analysis_id}',
+                sample_prefix = '{params.sample_prefix}'
+            )
+            rmarkdown::render(
+                input = input_rmd,
+                output_dir = outdir,
+                output_file = output_html,
+                intermediates_dir = intermediates,
+                knit_root_dir = project_dir,
+                clean = TRUE,
+                envir = new.env(parent = globalenv()),
+                params = render_params
+            )
+        " > {log:q} 2>&1
         """
