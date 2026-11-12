@@ -1,0 +1,584 @@
+---
+title: "Transfer cell labels"
+params:
+  reference_sample_id: tar_nextseq_batch1
+  query_sample_id: tar_nextseq_batch1
+  path_10x_reference: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar
+  path_10x_query: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar
+  reference_cluster_names: config/cell_label/tar_nextseq_batch1.csv
+  n_pcs: 30
+  resolution: 0.8
+  prediction_score_threshold: 0.50
+  prediction_margin_threshold: 0.10
+  label_mode: cell
+  path_cell_label: test/Hourglass/transfer_cell_label/cell_label/tar_nextseq_batch1.csv
+output:
+  html_document:
+    df_print: paged
+---
+
+# Transfer cell labels
+
+Use the curated cell labels from Tung et al. as the reference and transfer the labels to another biological sample. The output is a per-cell CSV that can be supplied directly to `Intra-species-hourglass.Rmd`.
+
+## Setup
+
+```{r Library}
+library(Seurat, quietly = TRUE)
+library(magrittr, quietly = TRUE)
+library(Matrix, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
+library(pheatmap, quietly = TRUE)
+```
+
+Params
+
+```{r Print markdown params}
+params
+```
+
+Global variables
+
+```{r Define global variables}
+path_reference_mtx <- file.path(
+  params$path_10x_reference,
+  "outs/filtered_feature_bc_matrix.h5"
+)
+path_query_mtx <- file.path(
+  params$path_10x_query,
+  "outs/filtered_feature_bc_matrix.h5"
+)
+path_reference_cluster <- switch(
+  params$reference_sample_id,
+  "ptr_tenx_batch1" = file.path(
+    params$path_10x_reference, 
+    "outs/analysis/clustering/kmeans_10_clusters/clusters.csv"
+  ),
+  "egr_nextseq_batch1" = file.path(
+    params$path_10x_reference, 
+    "outs/analysis/clustering/kmeans_10_clusters/clusters.csv"
+  ),
+  "lch_tenx_batch1" = file.path(
+    "rawdata/Tung_Cluster/Lch_clusters.csv"
+  ),
+  "tar_nextseq_batch1" = file.path(
+    "rawdata/Tung_Cluster/Tar_clusters_18.csv"
+  )
+) # remember to reformat Tar barcode by removing invalid "_" 
+path_reference_umap <- switch (
+  params$reference_sample_id,
+  "ptr_tenx_batch1" = file.path(
+    params$path_10x_reference, 
+    "outs/analysis/umap/2_components/projection.csv"
+  ),
+  "egr_nextseq_batch1" = file.path(
+    params$path_10x_reference, 
+    "outs/analysis/umap/2_components/projection.csv"
+  ),
+  "lch_tenx_batch1" = "rawdata/Tung_Cluster/Lch_projection.csv",
+  "tar_nextseq_batch1" = "rawdata/Tung_Cluster/Tar_projection.csv"
+)
+
+required_files <- c(
+  path_reference_mtx,
+  path_query_mtx,
+  path_reference_cluster,
+  params$reference_cluster_names
+)
+
+stopifnot(all(file.exists(required_files)))
+
+cluster_levels <- c(
+  "Fiber",
+  "Vessel",
+  "Fusiform Early Precursor",
+  "Fusiform Organizer",
+  "Ray Organizer",
+  "Ray Precursor",
+  "Fusiform Intermediate Precursor",
+  "Ray",
+  "Tracheid"
+) # this is for fixing cluster levels on the plot
+
+ordered_factor <- function(values) {
+  factor(
+    values,
+    levels = c(
+      intersect(cluster_levels, sort(unique(values))), 
+      setdiff(sort(unique(values)), cluster_levels)
+    )
+  )
+}
+
+stopifnot(params$label_mode %in% c("cell", "cluster_majority"))
+```
+
+Helper functions
+
+```{r Define helper functions}
+preprocess_seurat <- function(
+    seurat_obj,
+    n_pcs,
+    run_clustering = FALSE,
+    resolution = 0.8
+) {
+  seurat_obj %<>% NormalizeData(verbose = FALSE)
+  seurat_obj %<>% FindVariableFeatures(verbose = FALSE)
+  seurat_obj %<>% ScaleData(
+    features = VariableFeatures(.),
+    verbose = FALSE
+  )
+  seurat_obj %<>% RunPCA(
+    npcs = n_pcs,
+    seed.use = 42,
+    verbose = FALSE
+  )
+
+  if (run_clustering) {
+    seurat_obj %<>% FindNeighbors(
+      dims = seq_len(n_pcs),
+      verbose = FALSE
+    )
+    seurat_obj %<>% FindClusters(
+      resolution = resolution,
+      random.seed = 42,
+      verbose = FALSE
+    )
+    seurat_obj %<>% RunUMAP(
+      dims = seq_len(n_pcs),
+      seed.use = 42,
+      verbose = FALSE
+    )
+  }
+
+  seurat_obj
+}
+
+get_prediction_margin <- function(predictions) {
+  score_columns <- grep(
+    "^prediction\\.score\\.",
+    colnames(predictions),
+    value = TRUE
+  )
+  score_columns <- setdiff(
+    score_columns,
+    "prediction.score.max"
+  )
+
+  if (length(score_columns) < 2L) {
+    return(rep(NA_real_, nrow(predictions)))
+  }
+
+  score_matrix <- as.matrix(
+    predictions[, score_columns, drop = FALSE]
+  )
+
+  apply(
+    score_matrix,
+    1,
+    function(x) {
+      x <- sort(x, decreasing = TRUE)
+      x[1] - x[2]
+    }
+  )
+}
+```
+
+## Create the reference
+
+```{r Create reference SeuratObject}
+reference_obj <- CreateSeuratObject(
+  Read10X_h5(path_reference_mtx),
+  project = params$reference_sample_id
+)
+reference_obj <- preprocess_seurat(
+  reference_obj,
+  n_pcs = as.integer(params$n_pcs),
+  run_clustering = FALSE
+)
+reference_obj
+```
+
+Import the curated reference labels
+
+```{r Import reference labels}
+# cluster number-cell type mapping
+reference_cluster_map <- read.csv(
+  params$reference_cluster_names,
+  check.names = FALSE
+)
+cluster_names <- reference_cluster_map$new
+names(cluster_names) <- as.character(reference_cluster_map$old)
+
+# barcode-cluster mapping
+reference_cluster <- read.csv(
+  path_reference_cluster,
+  check.names = FALSE
+)
+reference_cluster %<>% dplyr::mutate(
+  cell_label = cluster_names[as.character(Cluster)]
+)
+if (params$reference_sample_id == "tar_nextseq_batch1") {
+  reference_cluster %<>% dplyr::mutate(
+    Barcode = Barcode %>% sub("Kun", "Ta", .) %>% sub("_", "", .)
+  )
+}
+rownames(reference_cluster) <- reference_cluster$Barcode
+
+# put cell label to reference seurat object
+reference_obj <- subset(reference_obj, cells = row.names(reference_cluster))
+reference_obj[["cell_label"]] <- reference_cluster[Cells(reference_obj), "cell_label"] %>% as.character()
+reference_obj$cell_label <- ordered_factor(reference_obj$cell_label)
+
+if (anyNA(reference_obj$cell_label)) {
+  stop(
+    "At least one reference cell could not be assigned a curated cell label."
+  )
+}
+
+Idents(reference_obj) <- "cell_label"
+table(reference_obj$cell_label)
+```
+
+Quick check
+
+```{r Quick check}
+if (file.exists(path_reference_umap)) {
+  emb <- read.csv(path_reference_umap)
+  rownames(emb) <- emb$Barcode %>% 
+    sub("Kun", "Ta", .) %>% 
+    sub("_", "", .)
+  emb <- emb[Cells(reference_obj), ]
+  emb <- emb[, c("UMAP.1", "UMAP.2")] %>% as.matrix
+  reference_obj[["umap"]] <- CreateDimReducObject(
+    embeddings = emb, 
+    key = "UMAP_", 
+    global = TRUE, 
+    assay = DefaultAssay(reference_obj)
+  )
+}
+
+DimPlot(reference_obj) + 
+  scale_color_brewer(palette = "Set1") +
+  theme_void()
+```
+
+## Exit if query is self
+
+```{r Exit early if query is self}
+if (params$query_sample_id == params$reference_sample_id) {
+  cell_label_output <- data.frame(
+    Barcode = as.character(reference_cluster$Barcode),
+    cell_label = reference_cluster$cell_label,
+    predicted_cell_label = reference_cluster$cell_label,
+    cluster_majority_cell_label = reference_cluster$cell_label,
+    seurat_cluster = as.character(reference_cluster$Cluster),
+  
+    # No prediction was performed for the curated reference.
+    prediction_score_max = NA_real_,
+    prediction_score_margin = NA_real_,
+  
+    # Curated labels are accepted directly.
+    transfer_pass = TRUE,
+    cluster_majority_fraction = 1,
+  
+    reference_sample_id = as.character(params$reference_sample_id),
+    query_sample_id = as.character(params$query_sample_id),
+    label_mode = "curated_reference",
+  
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  dir.create(
+    dirname(params$path_cell_label),
+    showWarnings = FALSE,
+    recursive = TRUE
+  )
+  write.csv(
+    cell_label_output,
+    file = params$path_cell_label,
+    row.names = FALSE,
+    quote = TRUE
+  )
+  head(cell_label_output)
+  
+  #
+  message(
+    "Query and reference are identical; wrote ",
+    nrow(cell_label_output),
+    " curated per-cell labels to ",
+    params$path_cell_label,
+    ". Skipping reference mapping."
+  )
+
+  # print sessionInfo and exit
+  sessionInfo()
+  knitr::knit_exit()
+}
+```
+
+
+## Create the query
+
+```{r Create query SeuratObject}
+query_obj <- CreateSeuratObject(
+  Read10X_h5(path_query_mtx),
+  project = params$query_sample_id
+)
+query_obj <- preprocess_seurat(
+  query_obj,
+  n_pcs = as.integer(params$n_pcs),
+  run_clustering = TRUE,
+  resolution = as.numeric(params$resolution)
+)
+query_obj
+```
+
+## Transfer cell labels
+
+Reference anchors are identified in PCA space and the curated reference labels are transferred to individual query cells.
+
+```{r Find transfer anchors}
+n_pcs <- as.integer(params$n_pcs)
+transfer_features <- intersect(
+  VariableFeatures(reference_obj),
+  rownames(query_obj)
+)
+
+if (length(transfer_features) < 50L) {
+  stop("Too few shared variable features for reference mapping.")
+}
+
+anchors <- FindTransferAnchors(
+  reference = reference_obj,
+  query = query_obj,
+  normalization.method = "LogNormalize",
+  reference.reduction = "pca",
+  reduction = "pcaproject",
+  features = transfer_features,
+  dims = seq_len(n_pcs),
+  verbose = TRUE
+)
+```
+
+```{r Transfer labels}
+predictions <- TransferData(
+  anchorset = anchors,
+  refdata = reference_obj$cell_label,
+  dims = seq_len(n_pcs),
+  verbose = TRUE
+)
+
+query_obj <- AddMetaData(
+  query_obj,
+  metadata = predictions
+)
+
+query_obj$prediction_score_margin <- get_prediction_margin(
+  predictions
+)
+
+query_obj$transfer_pass <- (
+  query_obj$prediction.score.max >=
+    as.numeric(params$prediction_score_threshold)
+) & (
+  query_obj$prediction_score_margin >=
+    as.numeric(params$prediction_margin_threshold)
+)
+```
+
+Summarize labels within unsupervised query clusters
+
+```{r Calculate cluster consensus}
+query_metadata <- query_obj[[]] %>%
+  tibble::rownames_to_column("Barcode") %>%
+  dplyr::mutate(
+    predicted_cell_label = as.character(predicted.id),
+    seurat_cluster = as.character(seurat_clusters)
+  )
+
+cluster_label_summary <- query_metadata %>%
+  dplyr::count(
+    seurat_cluster,
+    predicted_cell_label,
+    name = "n_cells"
+  ) %>%
+  dplyr::group_by(seurat_cluster) %>%
+  dplyr::mutate(
+    cluster_total = sum(n_cells),
+    cluster_fraction = n_cells / cluster_total
+  ) %>%
+  dplyr::arrange(
+    seurat_cluster,
+    dplyr::desc(cluster_fraction),
+    dplyr::desc(n_cells)
+  ) %>%
+  dplyr::slice_head(n = 1L) %>%
+  dplyr::ungroup() %>%
+  dplyr::rename(
+    cluster_majority_cell_label = predicted_cell_label,
+    cluster_majority_fraction = cluster_fraction
+  )
+
+query_metadata <- query_metadata %>%
+  dplyr::left_join(
+    cluster_label_summary %>%
+      dplyr::select(
+        seurat_cluster,
+        cluster_majority_cell_label,
+        cluster_majority_fraction
+      ),
+    by = "seurat_cluster"
+  )
+
+selected_label <- if (params$label_mode == "cluster_majority") {
+  query_metadata$cluster_majority_cell_label
+} else {
+  query_metadata$predicted_cell_label
+}
+
+query_metadata$cell_label <- ifelse(
+  query_metadata$transfer_pass,
+  selected_label,
+  "Unassigned"
+)
+
+query_obj$predicted_cell_label <- query_metadata$predicted_cell_label[
+  match(Cells(query_obj), query_metadata$Barcode)
+]
+query_obj$cluster_majority_cell_label <-
+  query_metadata$cluster_majority_cell_label[
+    match(Cells(query_obj), query_metadata$Barcode)
+  ]
+query_obj$cell_label <- factor(
+  query_metadata$cell_label[
+    match(Cells(query_obj), query_metadata$Barcode)
+  ],
+  levels = c(cluster_levels, "Unassigned")
+)
+
+cluster_label_summary
+```
+
+## Check transferred labels
+
+```{r Plot transferred labels}
+p_label <- DimPlot(
+  query_obj,
+  group.by = "cell_label",
+  reduction = "umap"
+) +
+  scale_color_brewer(palette = "Set1") +
+  theme_void() +
+  labs(
+    title = params$query_sample_id,
+    subtitle = sprintf(
+      "Transferred labels; mode = %s",
+      params$label_mode
+    )
+  )
+
+p_score <- FeaturePlot(
+  query_obj,
+  features = "prediction.score.max",
+  reduction = "umap"
+) +
+  scale_color_viridis_c(direction = -1) +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  labs(title = "Maximum transfer score")
+
+p_label | p_score
+```
+
+```{r Plot query cluster-label composition}
+cluster_label_table <- table(
+  cluster = query_obj$seurat_clusters,
+  cell_label = query_obj$cell_label
+)
+
+cluster_label_prop <- cluster_label_table /
+  rowSums(cluster_label_table)
+
+pheatmap::pheatmap(
+  cluster_label_prop,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = TRUE,
+  number_format = "%.2f",
+  border_color = NA,
+  main = paste0(
+    params$query_sample_id,
+    "\nTransferred cell-label proportions by query cluster"
+  )
+)
+```
+
+```{r Summarize transfer confidence}
+transfer_summary <- query_metadata %>%
+  dplyr::summarise(
+    n_cells = dplyr::n(),
+    n_pass = sum(transfer_pass),
+    fraction_pass = mean(transfer_pass),
+    median_score = median(prediction.score.max),
+    median_margin = median(prediction_score_margin)
+  )
+
+label_summary <- query_metadata %>%
+  dplyr::count(
+    cell_label,
+    transfer_pass,
+    name = "n_cells"
+  ) %>%
+  dplyr::group_by(cell_label) %>%
+  dplyr::mutate(
+    fraction = n_cells / sum(n_cells)
+  ) %>%
+  dplyr::ungroup()
+
+transfer_summary
+label_summary
+```
+
+## Write cell-label CSV
+
+The `cell_label` column is the analysis label. Cells below either confidence threshold are marked `Unassigned`; the unfiltered prediction is retained in `predicted_cell_label`.
+
+```{r Write cell label CSV}
+cell_label_output <- query_metadata %>%
+  dplyr::transmute(
+    Barcode,
+    cell_label,
+    predicted_cell_label,
+    cluster_majority_cell_label,
+    seurat_cluster,
+    prediction_score_max = prediction.score.max,
+    prediction_score_margin,
+    transfer_pass,
+    cluster_majority_fraction,
+    reference_sample_id = params$reference_sample_id,
+    query_sample_id = params$query_sample_id,
+    label_mode = params$label_mode
+  )
+
+dir.create(
+  dirname(params$path_cell_label),
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+write.csv(
+  cell_label_output,
+  file = params$path_cell_label,
+  row.names = FALSE,
+  quote = TRUE
+)
+
+head(cell_label_output)
+```
+
+Session info
+
+```{r Print session info}
+sessionInfo()
+```

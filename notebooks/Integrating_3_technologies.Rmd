@@ -1,0 +1,1411 @@
+---
+title: "Integrating AspWood, Spatial, and Single-cell data"
+author: "Chia-Chen Chu"
+date: '2025-10-23'
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+
+This notebook aims to integrate 3 datasets:\
+1. AspWood data (now hosted by PlantGenIE.org)\
+2. Visium data (from Quanzi's paper) 3. 10x 3' gene expression data (from Tung 2023)
+
+# Setup library and variables
+
+```{r}
+library(magrittr)
+library(data.table)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(readxl)
+library(spacexr)
+library(MatrixGenerics)
+library(pheatmap)
+library(dendsort)
+
+# AspWood
+path_aspwood_tpm <- "rawdata/AspWood/AspWood_tpm.txt"
+path_matches <- "rawdata/AspWood/run-diamond/matches.tsv"
+
+# Spatial
+path_spaceranger_out <- "/home/f06b22037/SSD2/JW/spaceranger_count_TenX_stemQuanzi2024_v3/outs/"
+
+# Single-cell
+path_cellranger_out <- "outputs/cellranger/reanalyze/ptr_tenx_batch1_rs17/outs/filtered_feature_bc_matrix/"
+path_umap_projection <- "outputs/seurat_integration/groups/four_trees_batch1/rs17/umap2d/projections/rs17.csv"
+path_cell_ident <- "outputs/Populus/barcode2color/ptr_tenx_batch1_rs17_curated.csv"
+
+# Populus trichocarpa annotation files
+path_annot_info <- "references/Ptr/update/Phytozome/PhytozomeV14/Ptrichocarpa/v4.1/annotation/Ptrichocarpa_533_v4.1.P14.annotation_info.txt"
+path_defline <- "references/Ptr/update/Phytozome/PhytozomeV14/Ptrichocarpa/v4.1/annotation/Ptrichocarpa_533_v4.1.P14.defline.txt"
+path_synonym <- "references/Ptr/annotation/Ptrichocarpa_533_v4.1.synonym.txt"
+path_monolignol <- "references/Putative monolignol genes.csv"
+
+defline <- fread(path_defline, header = FALSE, col.names = c("tid", "source", "defline"))
+defline$gid <- sapply(
+    defline$tid, 
+    function(x){
+        foo <- strsplit(x, "[.]")[[1]] 
+        return(paste(foo[1], foo[2], sep = "."))
+    })
+setkey(defline, gid)
+
+
+# Important output files
+date_version <- "Oct30"
+path_output <- sprintf("outputs/notebook/Integrating_3_technologies/%s/", date_version)
+dir.create(path_output)
+ph_object <- paste0(path_output, "pheatmap.rds")
+ph_polt <- paste0(path_output, "heatmap_SCT_log2.pdf")
+```
+
+# Preprocessing of the three datasets
+
+## AspWood
+
+Read data
+
+```{r}
+aspwood_tpm <- fread(path_aspwood_tpm)
+# exclude phloem samples
+# aspwood_tpm <- subset(aspwood_tpm, !grepl("Phloem", aspwood_tpm$sample_name))
+dim(aspwood_tpm)
+```
+
+```{r}
+head(aspwood_tpm)
+```
+
+```{r}
+aspwood_tpm_wide <- dcast(aspwood_tpm, gene_id ~ sample_name, value.var = "expression")
+gene_ids <- aspwood_tpm_wide$gene_id
+dim(aspwood_tpm_wide)
+aspwood_tpm_mtx <- as.matrix(aspwood_tpm_wide[,2:ncol(aspwood_tpm_wide)])
+rownames(aspwood_tpm_mtx) <- gene_ids
+dim(aspwood_tpm_mtx)
+aspwood_tpm_mtx[1:5, 1:5]
+```
+
+### Convert *P. tremula* gene ID to *P. trichocarpa* gene ID using DAIMOND
+
+-   *P. tremula* protein fasta (v2.2) were downloaded from PlantGeneIE.org (<ftp://plantgenie.org:980/Data/PlantGenIE/Populus_tremula/v2.2/fasta/Potra02_proteins.fasta.gz>)
+
+-   *P. trichocarpa* protein fasta (v.4.1) were downloaded from Phytozome
+
+Example of the code used to identify 1-to-1 best-hit between the two species:
+
+``` bash
+# creating a diamond-formatted database file
+docker run staphb/diamond:2.1.13 diamond makedb --in reference.fasta -d reference
+
+# running a search in blastp mode
+docker run staphb/diamond:2.1.13 diamond blastp -d reference -q queries.fasta -o matches.tsv
+```
+
+```{r}
+ptr_matches <- fread(path_matches)
+names(ptr_matches) <- c(
+    "Query_accession",
+    "Target_accession",
+    "Sequence_identity",
+    "Length",
+    "Mismatches",
+    "Gap_openings",
+    "Query_start",
+    "Query_end",
+    "Target_start",
+    "Target_end",
+    "E_value",
+    "Bit_score"
+)
+ptr_matches
+```
+
+Filter match results
+
+```{r}
+# get best hit per transcript isoform
+ptr_best_matches <- unique(ptr_matches, by = c("Query_accession"))
+dim(ptr_best_matches)
+
+# get best hit per P. tremula gene
+ptr_best_matches[, c("Query_accession") := tstrsplit(Query_accession, ".", fixed=TRUE, keep=1L)]
+ptr_best_matches <- unique(ptr_best_matches, by = c("Query_accession"))
+dim(ptr_best_matches)
+
+# get best hit per P. trichocarpa gene
+annot_info <- fread(path_annot_info)
+setkey(annot_info, peptideName)
+annot_info[ptr_best_matches$Target_accession, "locusName"]
+ptr_best_matches$Target_accession <- sapply(
+    ptr_best_matches$Target_accession,
+    function(x) {
+        foo <- strsplit(x, "[.]") %>% unlist
+        return(paste(foo[1], foo[2], sep = "."))
+    }
+)
+ptr_rbest_matches <- unique(ptr_best_matches, by = c("Target_accession"))
+dim(ptr_rbest_matches)
+
+# show result
+ptr_rbest_matches
+```
+
+Show the distribution of sequence similarity
+
+```{r}
+ptr_rbest_matches %>% 
+    ggplot(aes(x = Sequence_identity)) + 
+    geom_histogram(binwidth=.5) +
+    theme_classic() + 
+    labs(title = "
+Sequence similarity
+of P. trichocarpa & P. tremula reciprocal best-hits
+    ")
+```
+
+```{r}
+sum(ptr_rbest_matches$Sequence_identity > 80) / nrow(ptr_rbest_matches)
+sum(ptr_rbest_matches$Sequence_identity > 70) / nrow(ptr_rbest_matches)
+sum(ptr_rbest_matches$Sequence_identity > 60) / nrow(ptr_rbest_matches)
+```
+
+```{r}
+ptr_rbest_matches_60 <- subset(ptr_rbest_matches, ptr_rbest_matches$Sequence_identity > 60)
+setkey(ptr_rbest_matches_60, Query_accession)
+ptr_rbest_matches_60
+```
+
+```{r}
+mask <- rownames(aspwood_tpm_mtx) %in% ptr_rbest_matches_60$Query_accession
+aspwood_tpm_mtx_rbest <- aspwood_tpm_mtx[mask, ]
+dim(aspwood_tpm_mtx_rbest)
+aspwood_tpm_mtx_rbest[1:5, 1:5]
+
+```
+
+```{r}
+setkey(ptr_rbest_matches_60, Query_accession)
+rownames(aspwood_tpm_mtx_rbest) <- ptr_rbest_matches_60[
+    rownames(aspwood_tpm_mtx_rbest),
+    "Target_accession"
+] %>% unlist %>% unname
+aspwood_tpm_mtx_rbest[1:5, 1:5]
+```
+
+### Preprocessing
+
+```{r}
+data.frame(
+    mean = MatrixGenerics::rowMeans2(aspwood_tpm_mtx_rbest),
+    sd = MatrixGenerics::rowVars(aspwood_tpm_mtx_rbest) %>% sqrt
+) %>% ggplot(aes(x = mean, y = sd)) +
+    geom_point(size = .5) +
+    labs(title = "SD ~ Mean by TPM")
+```
+
+### Plot SD \~ Mean
+
+Variance stabilization (using TPM as input for log2 transformation)
+
+```{r}
+aspwood_log2_tpm_mtx_rbest <- log2(aspwood_tpm_mtx_rbest + 1)
+data.frame(
+    mean = MatrixGenerics::rowMeans2(aspwood_log2_tpm_mtx_rbest),
+    sd = MatrixGenerics::rowSds(aspwood_log2_tpm_mtx_rbest) %>% sqrt
+) %>% ggplot(aes(x = mean, y = sd)) +
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean by log2(TPM + 1)")
+```
+
+## Spatial data
+
+```{r}
+sp_data <- Load10X_Spatial(
+    data.dir=path_spaceranger_out,
+    filename = "filtered_feature_bc_matrix.h5",
+    assay = "RNA"
+)
+
+p1 <- VlnPlot(sp_data, features = "nCount_RNA", pt.size = 0.1) + NoLegend()
+p2 <- SpatialFeaturePlot(sp_data, features = "nCount_RNA") + theme(legend.position = "right")
+p1 | p2
+```
+
+### Preprocessing
+
+```{r}
+sp_data <- SCTransform(sp_data, return.only.var.genes = FALSE)
+VariableFeaturePlot(sp_data)
+```
+
+### SNN based clustering
+
+First round cluster
+
+```{r}
+sp_data <- RunPCA(sp_data)
+sp_data <- FindNeighbors(sp_data, reduction = "pca", dims = 1:30)
+sp_data <- FindClusters(sp_data, resolution = 0.8)
+p1 <- VlnPlot(sp_data, features = "nCount_RNA", pt.size = 0.1) + NoLegend()
+p2 <- SpatialDimPlot(sp_data, group.by = "seurat_clusters") + theme(legend.position = "right")
+p1 | p2
+```
+
+Exclude cluster spatial outliers
+
+```{r}
+spatial_outliers <- c(
+  "CCGGCGCATATTGGAT-1",
+  "GAGCGAGGGAGTACCG-1",
+  "ATCGACTCTTTCCGTT-1",
+  "GCTCTCGGGTACCGAA-1",
+  "TCCCGCGTACTCCTGG-1",
+  "ATTGCTGCTCCTCCAT-1",
+  "TTGTAATCCGTACTCG-1",
+  "ATGCCGGTTGATGGGA-1"
+)
+sp_data_outlier_rm <- subset(sp_data, cells = spatial_outliers, invert = TRUE)
+sp_data_outlier_rm <- subset(sp_data_outlier_rm, idents = c(1, 4, 5, 6))
+SpatialDimPlot(sp_data_outlier_rm, group.by = "seurat_clusters")
+```
+
+Get xylem sub-cluster
+
+```{r}
+sp_data_outlier_rm <- FindSubCluster(sp_data_outlier_rm, cluster = 1, graph.name = "SCT_nn")
+colors <- c(
+    "0" = "#F8766D",
+    "1_0" = "#F8766D",
+    "1_1" = "#00BA38",
+    "1_2" = "#619CFF",
+    "2" = "#7CAE00",
+    "3" = "#00BE67",
+    "4" = "#00BFC4",
+    "5" = "#00A9FF",
+    "6" = "#C77CFF",
+    "7" = "#FF61CC"
+)
+SpatialDimPlot(sp_data_outlier_rm, group.by = "sub.cluster") + 
+    scale_fill_manual(values = colors)
+```
+
+Name clusters
+
+```{r}
+sp_celltype <- sp_data_outlier_rm$sub.cluster
+sp_celltype[sp_celltype == "0"] <- "sp-bark"
+sp_celltype[sp_celltype == "1_0"] <- "sp-midXylem"
+sp_celltype[sp_celltype == "1_1"] <- "sp-earlyXylem"
+sp_celltype[sp_celltype == "1_2"] <- "sp-lateXylem"
+sp_celltype[sp_celltype == "2"] <- "sp-outerPith"
+sp_celltype[sp_celltype == "3"] <- "sp-innerPith"
+sp_celltype[sp_celltype == "4"] <- "sp-cambiumPhloem"
+sp_celltype[sp_celltype == "5"] <- "sp-cambiumXylem"
+sp_celltype[sp_celltype == "6"] <- "sp-primaryXylem"
+sp_celltype[sp_celltype == "7"] <- "sp-phloemDark"
+sp_data_outlier_rm$celltype <- factor(sp_celltype, levels = c(
+    "sp-bark", "sp-phloemDark", "sp-cambiumPhloem", "sp-cambiumXylem",
+    "sp-earlyXylem", "sp-midXylem", "sp-lateXylem", "sp-primaryXylem", 
+    "sp-outerPith", "sp-innerPith"
+))
+colors <- c(
+    "sp-bark" = "#F8766D",
+    "sp-midXylem" = "#F8766D",
+    "sp-earlyXylem" = "#00BA38",
+    "sp-lateXylem" = "#619CFF",
+    "sp-outerPith" = "#7CAE00",
+    "sp-innerPith" = "#00BE67",
+    "sp-cambiumPhloem" = "#00BFC4",
+    "sp-cambiumXylem" = "#00A9FF",
+    "sp-primaryXylem" = "#C77CFF",
+    "sp-phloemDark" = "#FF61CC"
+)
+p <- SpatialDimPlot(sp_data_outlier_rm, group.by = "celltype") + 
+    scale_fill_manual(values = scales::hue_pal()(6)) + theme(
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    plot.background = element_rect(fill = "transparent", colour = NA)
+    )
+
+pdf(
+    file = paste0(path_output, "/SpatialDimPlot.pdf"),
+    width = 10,
+    height = 10
+)
+print(p)
+dev.off()
+```
+
+Aggregate expression by sub.cluster
+
+```{r}
+Idents(sp_data_outlier_rm) <- "celltype"
+aggregated_count <- AggregateExpression(sp_data_outlier_rm)$SCT
+aggregated_count <- as.matrix(aggregated_count)
+dim(aggregated_count)
+aggregated_count[1:5, 1:5]
+```
+
+### Plot SD \~ Mean
+
+```{r}
+p1 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(aggregated_count),
+    sd = MatrixGenerics::rowSds(aggregated_count)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts")
+
+sp_log2 <- log2(aggregated_count + 1)
+p4 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(sp_log2),
+    sd = MatrixGenerics::rowSds(sp_log2)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts > log2")
+
+sp_vst <- DESeq2::vst(aggregated_count)
+p2 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(sp_vst),
+    sd = MatrixGenerics::rowSds(sp_vst)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts > vst")
+
+sp_rlog <- DESeq2::rlog(aggregated_count)
+p3 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(sp_rlog),
+    sd = MatrixGenerics::rowSds(sp_rlog)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts > rlog")
+
+p1
+p2
+p3
+p4
+```
+
+## Single-cell data
+
+Read data
+
+```{r}
+sc_data <- Read10X(data.dir=path_cellranger_out)
+cell_ident <- read.csv(path_cell_ident, header = TRUE, row.names = 1)
+umap_projection <- read.csv(path_umap_projection)
+
+# add cell type
+cluster <- cell_ident$Cluster
+cluster[cluster == 1] <- "sc-Vessel"
+cluster[cluster == 2] <- "sc-FuIP"
+cluster[cluster == 3] <- "sc-RO"
+cluster[cluster == 4] <- "sc-RP"
+cluster[cluster == 5] <- "sc-FuEP"
+cluster[cluster == 6] <- "sc-FuO"
+cluster[cluster == 7] <- "sc-Fiber"
+cluster[cluster == 8] <- "sc-Ray"
+cluster[cluster == 9] <- "sc-outlier1"
+cluster[cluster == 10] <- "sc-outlier2"
+cluster[cluster == 11] <- "sc-outlier3"
+names(cluster) <- rownames(cell_ident)
+sc_data <- CreateSeuratObject(counts = sc_data, project = "ptr_tenx_batch1_rs17")
+sc_data$cluster <- factor(cluster, levels = c(
+    "sc-FuO", "sc-FuEP", "sc-FuIP", "sc-Vessel", "sc-Fiber", 
+    "sc-RO", "sc-RP", "sc-Ray", "sc-outlier1", "sc-outlier2", "sc-outlier3"
+))
+Idents(sc_data) <- "cluster"
+
+# add UMAP
+umap_projection <- umap_projection[grep("ptr", umap_projection$Barcode), ]
+umap_matrix <- dplyr::select(
+    umap_projection,
+    UMAP_1 = UMAP.1,
+    UMAP_2 = UMAP.2
+) %>% as.matrix
+rownames(umap_matrix) <- umap_projection$Barcode %>% sapply(function(x){
+        strsplit(x, ":")[[1]][2]
+    })
+sc_data[["umap"]] <- Seurat::CreateDimReducObject(
+    embeddings = umap_matrix,
+    key = "UMAP_",
+    assay = Seurat::DefaultAssay(sc_data)
+)
+```
+
+Exclude outlier cells
+
+```{r}
+sc_data <- subset(
+    sc_data, 
+    idents = c("sc-outlier1", "sc-outlier2", "sc-outlier3"),
+    invert = TRUE
+)
+```
+
+Aggregate data
+
+```{r}
+sc_data <- SCTransform(sc_data)
+# sc_data <- RunPCA(sc_data)
+# sc_data <- RunUMAP(sc_data, reduction = "pca", dims = 1:30)
+aggregated_count <- AggregateExpression(sc_data)$SCT
+aggregated_count <- as.matrix(aggregated_count)
+dim(aggregated_count)
+aggregated_count[1:5, 1:5]
+```
+
+### Plot SD \~ Mean
+
+```{r}
+p1 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(aggregated_count),
+    sd = MatrixGenerics::rowSds(aggregated_count)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts")
+
+sc_log2 <- log2(aggregated_count + 1)
+p4 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(sc_log2),
+    sd = MatrixGenerics::rowSds(sc_log2)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk log2 counts")
+
+sc_vst <- DESeq2::vst(aggregated_count)
+p2 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(sc_vst),
+    sd = MatrixGenerics::rowSds(sc_vst)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .1) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts > vst")
+
+sc_rlog <- DESeq2::rlog(aggregated_count)
+p3 <- data.frame(
+    mean = MatrixGenerics::rowMeans2(sc_rlog),
+    sd = MatrixGenerics::rowSds(sc_rlog)
+) %>% ggplot(aes(x = mean, y = sd)) + 
+    geom_point(size = .01) +
+    labs(title = "SD ~ Mean - Pseudo-bulk counts > rlog")
+p1
+p4
+p2
+p3
+```
+
+## Try integrating
+
+Some peptides provided by Phytozome were not from the annotated loci
+
+```{r}
+# use vst normalized expression for single-cell and spatial data
+sc_normalized_expression <- sc_log2
+sp_normalized_expression <- sp_log2
+aspwood_normalized_expression <- aspwood_log2_tpm_mtx_rbest
+
+# re-format gene IDs (format: Potri.01G000000)
+rownames(sc_normalized_expression) %<>% sapply(function(x){
+    foo <- strsplit(x, "[.]")[[1]]
+    return(paste(foo[1], foo[2], sep = "."))
+}) %>% unname
+rownames(sp_normalized_expression)  %<>% sapply(function(x){
+    foo <- strsplit(x, "[.]")[[1]]
+    return(paste(foo[1], foo[2], sep = "."))
+}) %>% unname
+
+# 
+cat(
+    "No. peptides not included in GTF:", 
+    sum(!rownames(aspwood_log2_tpm_mtx_rbest) %in% rownames(sp_normalized_expression))
+)
+```
+
+```{r}
+common_gids <- intersect(
+    rownames(sc_normalized_expression),
+    rownames(aspwood_normalized_expression)
+)
+common_gids <- intersect(
+    common_gids,
+    rownames(sp_normalized_expression)
+)
+cat(
+    "No. common gene ID:",
+    nrow(aspwood_normalized_expression)
+)
+sc_normalized_expression <- sc_normalized_expression[common_gids, ]
+sp_normalized_expression <- sp_normalized_expression[common_gids, ]
+aspwood_normalized_expression <- aspwood_normalized_expression[common_gids, ]
+```
+
+```{r}
+df <- data.frame()
+df %<>% rbind(data.frame(
+    "source" = "single-cell",
+    "sd" = MatrixGenerics::rowSds(sc_normalized_expression),
+    "mean" = MatrixGenerics::rowMeans2(sc_normalized_expression)
+))
+df %<>% rbind(data.frame(
+    "source" = "spatial",
+    "sd" = MatrixGenerics::rowSds(sp_normalized_expression),
+    "mean" = MatrixGenerics::rowMeans2(sp_normalized_expression)
+))
+df %<>% rbind(data.frame(
+    "source" = "aspwood",
+    "sd" = MatrixGenerics::rowSds(aspwood_normalized_expression),
+    "mean" = MatrixGenerics::rowMeans2(aspwood_normalized_expression)
+))
+ggplot(df %>% sample_frac(.), aes(x = mean, y = sd, color = source)) + 
+    geom_point(size = .1)
+```
+
+### (Deprecated) Z-score normalize data
+
+This step produce NA, which should be filtered after combining data
+
+```{r}
+# ZscoreNormalize <-  function(x) {
+#     apply(x, MARGIN = 1, function(x) {(x - median(x)) / sd(x)}) %>% t
+# }
+# sc_normalized_expression %<>% ZscoreNormalize
+# sp_normalized_expression %<>% ZscoreNormalize
+# aspwood_normalized_expression %<>% ZscoreNormalize
+```
+
+### Center rows per datasets
+
+```{r}
+centerData <- function(x) {
+    foo <- apply(x, MARGIN = 1, function(x){
+        x - mean(x)
+    }) %>% t
+    return(foo)
+}
+sc_normalized_expression %<>% centerData
+sp_normalized_expression %<>% centerData
+aspwood_normalized_expression %<>% centerData
+```
+
+### (Deprecated) Scale data
+
+```{r}
+# scaleData <- function(x) {
+#     foo <- apply(x, MARGIN = 1, function(x){
+#         variance <- var(x)
+#         if (variance == 0) {
+#             return(x)
+#         } else {
+#             return(x / sd(x))
+#         }
+#     }) %>% t
+#     return(foo)
+# }
+# sc_normalized_expression %<>% scaleData
+# sp_normalized_expression %<>% scaleData
+# aspwood_normalized_expression %<>% scaleData
+```
+
+### Combine data
+
+```{r}
+combined_normalized_expression <- cbind(
+    sc_normalized_expression,
+    sp_normalized_expression
+)
+combined_normalized_expression <- cbind(
+    combined_normalized_expression, 
+    aspwood_normalized_expression
+)
+dim(combined_normalized_expression)
+```
+
+Remove row containing NA
+
+```{r}
+combined_normalized_expression <- subset(
+    combined_normalized_expression,
+    !MatrixGenerics::rowAnyNAs(combined_normalized_expression)
+)
+dim(combined_normalized_expression)
+```
+
+### Scale columns (sample)
+
+```{r}
+# combined_normalized_expression <- combined_normalized_expression %>% apply(
+#     MARGIN = 2,
+#     function(x) {
+#         (x - mean(x)) / sd(x)
+#     }
+# ) 
+```
+
+### PCA
+
+```{r}
+pca_result <- irlba::prcomp_irlba(
+    t(combined_normalized_expression),
+    n = 2,
+    center = FALSE,
+    scale. = FALSE
+)
+pca_projection <- pca_result$x
+plot_data <- data.frame(pca_projection[, c("PC1", "PC2")])
+plot_data$sample <- sapply(
+    colnames(combined_normalized_expression),
+    function(x) {strsplit(x, "-")[[1]][2]}
+)
+plot_data$source <- sapply(
+    colnames(combined_normalized_expression),
+    function(x) {substring(x, 1, 1)}
+)
+
+ggplot(
+    plot_data, 
+    aes(
+        x = PC1, 
+        y = PC2, 
+        color = factor(sample),
+        shape = factor(source)
+    )
+) +
+    geom_point() +
+    theme_classic() +
+    theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10, "pt"))
+
+```
+
+### Heatmap + clustering
+
+```{r}
+# select top N variable genes
+row_sd <- MatrixGenerics::rowSds(combined_normalized_expression)
+ggplot(data.frame(sd = row_sd), aes(x = sd)) + 
+    geom_histogram(binwidth = .02) +
+    geom_segment(
+        aes(x = sort(row_sd, decreasing = TRUE)[5000], y = .1, 
+            xend = sort(row_sd, decreasing = TRUE)[5000], yend = 800),
+        linetype="dashed", 
+        color = "red"
+    ) +
+    theme_classic()
+```
+
+Use top N variable genes
+
+```{r}
+top_var_genes <- rownames(combined_normalized_expression)[row_sd > 0]; length(top_var_genes)
+# top_var_genes <- rownames(combined_normalized_expression)[order(row_sd, decreasing = TRUE)][1:5000]
+```
+
+### (Re-run from here) Clustering samples based on correlation
+
+```{r}
+# copy and rename expression matrix for plotting
+combined_normalized_expression_tmp <- combined_normalized_expression
+colnames(combined_normalized_expression_tmp) <- 
+    colnames(combined_normalized_expression) %>% 
+    sub("-Cambium", "", .) %>% 
+    sub("-Phloem", "", .) %>% 
+    sub("-Expanding-xylem", "", .) %>% 
+    sub("-Lignified-xylem", "", .)
+
+
+# set column annotations
+annotation_col <- data.frame(
+    Source = c(
+        rep("SC", ncol(sc_normalized_expression)),
+        rep("SP", ncol(sp_normalized_expression)),
+        rep("Asp", ncol(aspwood_normalized_expression))
+    )
+)
+rownames(annotation_col) <- colnames(combined_normalized_expression_tmp)
+
+# set color for column annoation
+annotation_colors <- list(
+  Source = c(SC = "#F8766D", SP = "#00BA38", Asp = "#619CFF")
+)
+
+# 
+callback_dendsort <- function(hc, ...){
+  dendsort(hc, isReverse = TRUE)
+}
+
+# create heatmap
+colors <- list(
+    color2.1 = c("#4E96A1", "#AD5F58"),
+    color8.1 = c("#2E58A4", "#B69D71"),
+    color10.1 = c("#843E3E", "#D9B97E"),
+    color11.1 = c("#EDD087", "#7B8983"),
+    color12.1 = c("#B49C6E", "#096A5F"),
+    color13 = c("#326068", "#864742"),
+    color14 = c("#24447E", "#A58855"),
+    color15 = c("#5B2B2B", "#BE8E38"),
+    color16 = c("#D9A421", "#5B7058"),
+    color17 = c("#9B824F", "#074D45")
+) # "navy" "firebrick3"
+for (i in 1:length(colors)) {
+    c1 = colors[[i]][1]
+    c2 = colors[[i]][2]
+    name = names(colors)[i]
+    set.seed(42)
+    ph <- pheatmap(
+        combined_normalized_expression_tmp[top_var_genes, ],
+        kmeans_k = 30,
+        color = colorRampPalette(c(c1, "white", c2))(100),
+        # annotation_col = annotation_col,
+        # annotation_colors = annotation_colors,
+        clustering_distance_rows = "correlation",
+        clustering_distance_cols = "correlation",
+        clustering_method = "complete",
+        cutree_rows = 10,
+        cutree_cols = 11,
+        clustering_callback = callback_dendsort,
+        scale = "column",
+        fontsize_col = 14,
+        fontsize_row = 14,
+        border_color = "white",
+        filename = file.path(path_output, sprintf("heatmap_%s.pdf", name)),
+        width = 28,
+        height = 14
+    )   
+}
+```
+
+Plot average expression of gene clusters
+
+```{r}
+sample_clusters <- cutree(ph$tree_col, k = 11)
+gene_clusters <- ph$kmeans$cluster
+gene_modules <- cutree(ph$tree_row, k = 10)
+
+# sample order
+order_by_layer <- sample_clusters %>% names %>% sapply(function(x){
+        foo <- strsplit(x, "-")[[1]]
+        if (length(foo) <= 2) {
+            return(0)
+        } else {
+            return(as.integer(foo[length(foo)]))   
+        }
+    }) %>% sort %>% names
+sample_clusters <- sample_clusters[order_by_layer]
+cluster_order <- c(6, 2, 5, 3, 9, 11, 4, 10, 7, 1, 8)
+sample_sorted <- c()
+sample_order <- c()
+for (sc in cluster_order) {
+    sample_sorted <- append(sample_sorted, sample_clusters[sample_clusters == sc] %>% names)
+    sample_order <- append(sample_order, sample_clusters[sample_clusters == sc])
+}
+
+# calcualte average epxression
+plot_df <- data.frame()
+for (gc in unique(gene_clusters)) {
+    genes <- gene_clusters[gene_clusters == gc] %>% names
+    plot_df <- rbind(
+        plot_df,
+        data.frame(
+            "cluster" = gc,
+            "sample" = sample_sorted,
+            "avg_expression" = combined_normalized_expression[genes, sample_sorted] %>% colMeans2
+        )
+    )
+}
+# assigne sample order
+plot_df$sample <- factor(
+    plot_df$sample,
+    levels = sample_sorted
+)
+plot_df$source <- "aspwood"
+plot_df[grepl("sc", plot_df$sample), "source"] <- "single-cell"
+plot_df[grepl("sp", plot_df$sample), "source"] <- "spatial"
+
+
+# plot
+for (gm in unique(gene_modules)) {
+    module_clusters <- names(gene_modules[gene_modules == gm])
+    is_module_clusters <- plot_df$cluster %in% module_clusters
+    # is_sc <- plot_df$source == "single-cell"
+    # is_sp <- plot_df$source == "spatial"
+    # is_asp <- plot_df$source == "aspwood"
+    p <- ggplot(
+        plot_df[is_module_clusters,],
+        aes(
+            x = sample, 
+            y = avg_expression, 
+            group = factor(cluster),
+            color = factor(cluster),
+            fill = factor(source)
+        )
+    ) + 
+        geom_hline(yintercept = 0, linetype = 3, color = "black") +
+        geom_line() +
+        geom_vline(
+            xintercept = grep("T", sample_sorted, invert = TRUE),
+            linetype = 3, 
+            color = "black"
+        ) +
+        geom_point(shape = 21, size = 2, stroke = 0) +
+        scale_fill_manual(values = c("single-cell" = "red", "spatial" = "blue", "aspwood" = "white")) +
+        theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1, size = 8)) 
+    pdf(
+        sprintf("%s/module%s.pdf", path_output, gm),
+        width = 14,
+        height = 6
+    )
+    print(p)
+    dev.off()
+}
+```
+
+Get member of gene clusters
+
+Module 1: 1, 22 (Bi-modal; lowest in Expanding xylem)
+
+Module 2: 2, 5 (Fiber \> Vessel \> FuIP \> FuEP)
+
+Module 3: single cluster (970 members) module.
+
+Module 4: 25, 9 , 4, 20 (Early cambium)
+
+Module 5: 6, 17 (Single-cell early, AspWood phloem)
+
+Module 6: 7 (single cluster module; cambium & lignified xylem)
+
+Module 7: 12, 24, 29 (RO \> RP \> Ray; AspWood lignified xylem)
+
+Module 8: 16 (fiber, expanding xylem), 28 (RO, RP, lignified xylem)
+
+Module 9: 18, 23 (fiber, expanding xylem)
+
+Module 10: 21 (single cluster module; low in ray, fiber, cambium, lignified xylem)
+
+```{r}
+setkey(annot_info, locusName)
+for (i in c(1, 22, 2, 5, 25, 9, 4, 20, 6, 17, 7, 12, 24, 29, 16, 28, 18, 23, 21)) {
+    # create cluster output directory
+    path_cluster_dir <- sprintf("%s/cluster%s/", path_output, i)
+    dir.create(path_cluster_dir, showWarnings = FALSE)
+
+    # get genes
+    cluster_genes <- which(ph$kmeans$cluster == i) %>% names
+    
+    # subset annot info
+    annot_info_subset <- annot_info[cluster_genes,] %>% unique
+    write.csv(
+        annot_info_subset,
+        sprintf("%s/annot_info.csv", path_cluster_dir),
+        row.names = FALSE,
+        quote = FALSE
+    )
+    
+    # write ath best hit individually
+    cat(
+        annot_info_subset$best_arabi_gene,
+        sep = "\n",
+        file = sprintf("%s/ath_best.txt", path_cluster_dir)
+    )
+    
+    # plot heatmap
+    set.seed(42)
+    cluster_ph <- pheatmap(
+        combined_normalized_expression[cluster_genes, sample_sorted],
+        kmeans_k = min(length(cluster_genes), 50),
+        color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
+        annotation_col = annotation_col,
+        annotation_colors = annotation_colors,
+        cluster_cols = FALSE,
+        clustering_distance_rows = "correlation",
+        clustering_method = "complete",
+        clustering_callback = callback_dendsort,
+        scale = "column",
+        filename = sprintf("%s/heatmap.pdf", path_cluster_dir),
+        cutree_rows = 20,
+        fontsize_col = 14,
+        fontsize_row = 14,
+        border_color = "gray60",
+        width = 28,
+        height = 14
+    )
+    saveRDS(cluster_ph, sprintf("%s/heatmap.RDS", path_cluster_dir))
+}
+```
+
+### Plot sub-cluster gene expressions
+
+Module 1: 1, 22 (Bi-modal; lowest in Expanding xylem)
+
+Module 2: 2, 5 (Fiber \> Vessel \> FuIP \> FuEP)
+
+Module 3: single cluster (970 members) module.
+
+Module 4: 25, 9 , 4, 20 (Early cambium)
+
+Module 5: 6, 17 (Single-cell early, AspWood phloem)
+
+Module 6: 7 (single cluster module; cambium & lignified xylem)
+
+Module 7: 12, 24, 29 (RO \> RP \> Ray; AspWood lignified xylem)
+
+Module 8: 16 (fiber, expanding xylem), 28 (RO, RP, lignified xylem)
+
+Module 9: 18, 23 (fiber, expanding xylem)
+
+Module 10: 21 (single cluster module; low in ray, fiber, cambium, lignified xylem)
+
+```{r skipped_chunk, eval = FALSE}
+sub_clusters <- list(
+    # "18" = c(3, 24, 33, 13, 23),
+    # "23" = c(1, 9, 8, 20, 15, 43),
+    # "16" = c(33, 43, 11, 40),
+    # "25" = c(36, 18, 50, 3, 23, 27, 22, 20, 42, 49, 28, 10, 5, 31, 41),
+    # "9" = c(4, 25, 44, 45, 29, 33, 18, 43),
+    # "4" = c(3, 9, 47, 38, 43, 40, 19, 44, 27, 31, 10, 45, 39)
+    # "20" = c(3, 47, 41, 27, 4, 44, 24, 33, 48),
+    # "2" = c(15, 2, 41, 4, 6, 11, 25, 36, 7, 18, 34, 30, 13),
+    # "5" = c(10, 36, 14),
+    # "6" = c(3, 36, 50),
+    # "1" = c(41, 18, 44),
+    # "22" = c(31, 33),
+    # "7" = c(28, 38, 13, 24, 8, 23, 27),
+    "12" = c(32, 17, 40, 45, 14, 28, 15, 36, 27, 38)
+)
+for (i in names(sub_clusters)) {
+    path_cluster_dir <- sprintf("%s/cluster%s/", path_output, i)
+    cluster_ph <- readRDS(sprintf("%s/heatmap.RDS", path_cluster_dir))
+    sub_cluster_genes <- cluster_ph$kmeans$cluster[
+        cluster_ph$kmeans$cluster %in% sub_clusters[[as.character(i)]]
+    ] %>% names
+    
+    # plot single-cell expression
+    p_sc <- VlnPlot(
+        sc_data, 
+        features = sub_cluster_genes %>% paste0(., ".v4.1"), 
+        slot = "scale.data",
+        ncol = 5
+    )
+    pdf(
+        paste0(path_cluster_dir, "vln_sc.pdf"),
+        width = 14,
+        height = 5 * (length(sub_cluster_genes) %/% 5)
+    )
+    print(p_sc)
+    dev.off()
+    
+    # plot spatial gene expression
+    p_sp <- VlnPlot(
+        sp_data_outlier_rm, 
+        features = sub_cluster_genes %>% paste0(., ".v4.1"), 
+        slot = "scale.data"
+    )
+    pdf(
+        paste0(path_cluster_dir, "vln_sp.pdf"),
+        width = 14,
+        height = 5 * (length(sub_cluster_genes) %/% 5)
+    )
+    print(p_sp)
+    dev.off()
+    
+    
+    # plot AspWood gene expression
+    aspwood_subcluster <- aspwood_normalized_expression[
+        sub_cluster_genes, 
+        grep("T", sample_sorted, value = TRUE)
+    ]
+    plot_df <- data.frame()
+    for (cname in colnames(aspwood_subcluster)) {
+        plot_df <- rbind(plot_df, data.frame(
+            "sample" = cname,
+            "gene" = rownames(aspwood_subcluster),
+            "expression" = aspwood_subcluster[, cname]
+        ))
+    }
+    plot_df$sample <- factor(plot_df$sample, levels = sample_sorted)
+    p_asp <- ggplot(plot_df, aes(x = sample, y = expression, group = gene, color = gene)) +
+        geom_hline(yintercept = 0, linetype = 3, color = "black") +
+        geom_point(shape = 21) +
+        geom_line() + 
+        theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1, size = 8))
+    pdf(
+        paste0(path_cluster_dir, "line_asp.pdf"),
+        width = 14,
+        height = 7
+    )
+    print(p_asp)
+    dev.off()
+    
+    # subset annot info
+    write.csv(
+        annot_info[sub_cluster_genes, ],
+        file = paste0(path_cluster_dir, "annot_info_subcluster.csv"),
+        row.names = FALSE,
+        quote = FALSE
+    )
+}
+```
+
+### Plot expression of each gene from a curated list
+
+List of gene to plot
+
+```{r}
+curated_list <- list(
+  "1" = c(
+    "Potri.002G040600", "Potri.005G099300", "Potri.014G036500"
+  ),
+  "2" = c(
+    "Potri.001G097001", "Potri.001G106100", "Potri.002G176800", "Potri.002G223300", 
+    "Potri.008G006500", "Potri.008G094300", "Potri.010G113300", "Potri.010G207200", 
+    "Potri.012G127900", "Potri.017G119900", "Potri.017G144061"
+  ),
+  "4" = c(
+    "Potri.001G071000", "Potri.001G126100", "Potri.001G292900", "Potri.002G124100", 
+    "Potri.003G112600", "Potri.005G084700", "Potri.006G093900", "Potri.008G138400", 
+    "Potri.009G061300", "Potri.009G133100", "Potri.012G044600", "Potri.012G088300", 
+    "Potri.012G128700", "Potri.012G131500", "Potri.013G005700", "Potri.014G094800", 
+    "Potri.014G122200", "Potri.016G081600", "Potri.018G087400"
+  ),
+  "5" = c(
+    "Potri.002G078600", "Potri.006G070500", "Potri.006G196800", "Potri.010G089900", 
+    "Potri.012G114600", "Potri.016G088700"
+  ),
+  "6" = c(
+    "Potri.012G085800", "Potri.012G085901"
+  ),
+  "7" = c(
+    "Potri.001G410700", "Potri.004G234100", "Potri.007G086000", 
+    "Potri.013G131100", "Potri.014G019600"
+  ),
+  "9" = c(
+    "Potri.001G467600", "Potri.004G168800", "Potri.006G255900", 
+    "Potri.008G094200", "Potri.008G132700", "Potri.009G132500", "Potri.015G057800"
+  ),
+  "12" = c(
+    "Potri.002G013200", "Potri.002G020800", "Potri.005G191400", "Potri.008G086700", 
+    "Potri.012G070900", "Potri.015G144200", "Potri.016G069700", "Potri.018G127800"
+  ),
+  "18" = c(
+    "Potri.001G107000", "Potri.001G375700", "Potri.002G195400", "Potri.002G257900", 
+    "Potri.004G059600", "Potri.005G141300", "Potri.008G069900", "Potri.010G141600", 
+    "Potri.010G184000", "Potri.015G129400", "Potri.016G119100"
+  ),
+  "20" = c(
+    "Potri.001G286700", "Potri.001G400401", "Potri.001G407100", "Potri.003G087600", 
+    "Potri.005G138100", "Potri.005G163700", "Potri.006G036400", "Potri.006G050800", 
+    "Potri.006G114600", "Potri.006G144900", "Potri.007G040800", "Potri.008G204400", 
+    "Potri.018G079800"
+  ),
+  "22" = c(
+    "Potri.001G012300", "Potri.001G012300", "Potri.001G328701", "Potri.002G251200", 
+    "Potri.005G195700", "Potri.006G031500", "Potri.006G115300", "Potri.010G078400", 
+    "Potri.014G078700", "Potri.014G087700", "Potri.016G003400", "Potri.016G003400", 
+    "Potri.016G014900", "Potri.018G043900"
+  ),
+  "23" = c(
+    "Potri.001G403600", "Potri.001G416300", "Potri.003G074700", "Potri.003G143200", 
+    "Potri.003G151700", "Potri.004G190900", "Potri.005G065200", "Potri.005G205700", 
+    "Potri.006G136700", "Potri.007G047500", "Potri.008G084100", "Potri.009G147500", 
+    "Potri.014G040300", "Potri.016G110900", "Potri.016G113300", "Potri.016G138600"
+  ),
+  "25" = c(
+    "Potri.001G052300", "Potri.001G120300", "Potri.001G121900", "Potri.001G240900", 
+    "Potri.002G029100", "Potri.002G257700", "Potri.004G138200", "Potri.004G206600", 
+    "Potri.005G144900", "Potri.006G117200", "Potri.006G121700", "Potri.008G020900", 
+    "Potri.009G031800", "Potri.009G092300", "Potri.011G057500", "Potri.013G152400", 
+    "Potri.014G025300", "Potri.014G071700", "Potri.014G109200", "Potri.014G158400", 
+    "Potri.017G050300", "Potri.017G083000", "Potri.017G088600", "Potri.019G069300", 
+    "Potri.019G116400", "Potri.019G125000", "Potri.T011100"
+  )
+)
+
+```
+
+Plot function
+
+```{r}
+setkey(ptr_rbest_matches_60, Target_accession)
+plot_three_datasets <- function(
+        sc_object, 
+        sp_object, 
+        aspwood_mtx, 
+        gid,
+        dirname,
+        width,
+        height,
+        theme_color="black"
+    ) {
+    features <- paste0(gid, ".v4.1")
+    if (features %in% Features(sc_object)) {
+        sc_vln <- VlnPlot(sc_object, features = features,
+            cols = c(
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5",
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5"
+            ),
+            pt.size = 0
+        ) + geom_jitter(
+            size = 0.1, 
+            color = theme_color
+        ) + theme(
+            plot.title = element_blank(),
+            axis.title.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.x = element_text(angle = 40, hjust = 1, vjust = 1, size = 10),
+            rect = element_rect(fill = NA, colour = NA),
+            legend.position = "none"
+        )
+        sc_vln[[1]]$layers[[1]]$aes_params$colour <- "#595959"
+        sc_fea <- FeaturePlot(sc_object, features = features,
+            cols = c("#F5F5F5", theme_color)
+        ) + theme(
+            plot.title = element_blank(),
+            axis.title.x = element_blank(),
+            axis.title.y = element_blank(),
+            legend.position = "top"
+        ) + NoAxes()
+    } else {
+        sc_vln <- ggplot()
+        sc_fea <- ggplot()
+    }
+    if (features %in% Features(sp_object)) {
+        sp_vln <- VlnPlot(sp_object, features = features,
+            cols = c(
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5",
+                "#F5F5F5", "#F5F5F5", "#F5F5F5", "#F5F5F5"
+            ),
+            pt.size = 0
+        ) + geom_jitter(
+            size = 0.1, 
+            color = theme_color
+        ) + theme(
+                plot.title = element_blank(),
+                axis.title.x = element_blank(),
+                axis.title.y = element_blank(),
+                axis.text.x = element_text(angle = 40, hjust = 1, vjust = 1, size = 10),
+                panel.background = element_rect(fill = NA, colour = NA),
+                plot.background = element_rect(fill = NA, colour = NA),
+                legend.position = "none"
+        ) 
+        sp_fea <- SpatialFeaturePlot(sp_object, features = features) +
+            scale_fill_gradient(
+                low = "#F5F5F5",
+                high = theme_color
+            ) +
+            theme(
+                plot.title = element_blank(),
+                axis.title.x = element_blank(),
+                legend.position = "bottom"
+            )
+    } else {
+        sp_vln <- ggplot()
+        sp_fea <- ggplot()
+    }
+    
+    # asp
+    if (gid %in% rownames(aspwood_mtx)) {
+        aspwood_plot_data <- aspwood_mtx[gid, grep("T", sample_sorted, value = TRUE)] %>%
+            as.data.frame
+        colnames(aspwood_plot_data) <- "expression"
+        # aspwood_plot_data$sample <- factor(rownames(aspwood_plot_data), levels = sample_sorted)
+        aspwood_plot_data$gid <- gid
+        aspwood_plot_data$layer <- rownames(aspwood_plot_data) %>% sapply(function(x){
+            foo <- strsplit(x, "-")[[1]]
+            l <- foo[length(foo)]
+        })
+        
+        # calculate mean by layers
+        aspwood_plot_mean <- aspwood_plot_data %>%
+            group_by(layer) %>%
+            summarise(mean_value = mean(expression))
+        
+        # plot
+        asp_ln <- ggplot(
+                aspwood_plot_data, 
+                aes(
+                    x = layer,
+                    y = expression
+                )
+            ) +
+            geom_point(
+                color = theme_color
+            ) +
+            geom_point(
+                data = aspwood_plot_mean, 
+                aes(y = mean_value), 
+                color = theme_color, 
+                size = 4.5
+            ) +
+            geom_line(
+                data = aspwood_plot_mean,
+                aes(y = mean_value, group = 1), 
+                color = theme_color,
+                linewidth = 0.8 * 2
+            ) +
+            geom_vline(
+                xintercept = c(5.5, 12.5, 19.5),
+                linetype = "dashed", 
+                linewidth = 0.8
+            ) +
+            theme_classic() +
+            theme(
+                axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 12),
+                axis.title.x = element_blank(),
+                axis.title.y = element_blank(),
+                axis.line.x = element_line(colour = "black", linewidth = 0.5),
+                axis.line.y = element_line(colour = "black", linewidth = 0.5),
+                panel.background = element_rect(fill = NA, colour = NA),
+                plot.background = element_rect(fill = NA, colour = NA)
+            ) + labs(
+                caption = paste0(
+                    "Defline: ", defline[gid, "defline"][[1]], "\n",
+                    annot_info[gid, "Best-hit-arabi-name"][[1]], ":",
+                    annot_info[gid, "Best-hit-arabi-defline"][[1]], "\n",
+                    "P. tremula: ", ptr_rbest_matches_60[gid, "Query_accession"][[1]]
+                )
+            )
+    } else {
+        asp_ln <- ggplot()
+    }
+        
+    # combine and save plot
+    # p <- ((sc_fea | sc_vln) / (sp_fea | sp_vln)) | asp_ln
+    
+    # save to separate files
+    p_list <- list(
+        A=sc_fea,
+        B=sp_fea,
+        C=sc_vln,
+        D=sp_vln,
+        E=asp_ln
+    )
+    dir.create(dirname, showWarnings = FALSE)
+    for (i in 1:length(p_list)) {
+        p <- p_list[[i]]
+        p_name <- names(p_list)[i]
+        svg(
+            file.path(dirname, sprintf("%s.svg", p_name)),
+            width = ifelse(p_name == "E", width / 2, width / 4),
+            height = ifelse(p_name == "E", height, height / 2),
+            bg = "transparent"
+        )
+        print(p)
+        dev.off()
+    }
+    
+    # return plot
+    return(p_list)
+}
+```
+
+Plot
+
+```{r}
+gene_pout <- paste0(path_output, "/gene_expression/")
+dir.create(gene_pout, showWarnings = FALSE)
+theme_color <- "#496F5D"
+replot_genes <- c(
+    "PILS7" = "Potri.005G099300",
+    "GASA4" = "Potri.017G083000",
+    "XTH9_(1)" = "Potri.019G125000",
+    "XTH9_(2)" = "Potri.013G152400",
+    "XTH19" = "Potri.013G005700",
+    "PtrEXPA1" = "Potri.001G240900",
+    "Aquaporin_TIP1_1" = "Potri.006G121700",
+    "ESK1" = "Potri.008G069900",
+    "FLA11" = "Potri.016G088700",
+    "FLA12_(1)" = "Potri.012G127900",
+    "FLA12_(2)" = "Potri.015G129400",
+    "CESA4" = "Potri.002G257900"
+)
+for (i in 1:length(replot_genes)) {
+    g <- replot_genes[[i]]
+    g_name = names(replot_genes)[i]
+    p <- plot_three_datasets(
+        sc_data,
+        sp_data_outlier_rm,
+        aspwood_log2_tpm_mtx_rbest,
+        g,
+        sprintf("%s/replot_%s_%s", gene_pout, g_name, g),
+        width = 14,
+        height = 8,
+        theme_color = theme_color
+    )
+}
+# for (c in names(curated_list)) {
+#     for (g in curated_list[[c]]) {
+#         p <- plot_three_datasets(
+#             sc_data,
+#             sp_data_outlier_rm,
+#             aspwood_log2_tpm_mtx_rbest,
+#             g,
+#             sprintf("%s/Cluster%s_%s", gene_pout, c, g),
+#             width = 14,
+#             height = 8,
+#             theme_color = theme_color
+#         )
+#     }
+#     break
+# }
+```
+
+### Monolignol biosynthetic genes (Putative)
+
+Map old gene model name to latest annotation
+
+```{r}
+mapping <- c()
+mapped_gid <- c()
+synonym_lines <- readLines(file(path_synonym))
+for (l in synonym_lines) {
+    fields <- l %>% strsplit("\t") %>% unlist
+    gid <- sub("[.][0-9]$", "", fields[1])
+    if (gid %in% mapped_gid) {
+        next
+    }
+    mapped_gid %<>% append(gid)
+    for (syn in fields[2:length(fields)]) {
+        mapping[syn] <- gid
+    }
+}
+monolignol_genes <- list(
+    "CCoAMT" = c("Potri.001G304800", "Potri.009G099800"),
+    "4CL" = c("Potri.001G036900", "Potri.003G188500", "Potri.012G095000")
+)
+
+```
+
+Plot gene expression of monolignol genes
+
+```{r}
+putative_monolignol_genes <- fread(path_monolignol, skip = 2)
+putative_monolignol_genes$gid <- mapping[putative_monolignol_genes$`Gene model name`]
+putative_monolignol_genes %<>% na.omit()
+```
+
+```{r}
+monolignol_pout <- paste0(gene_pout, "/monolignol")
+dir.create(monolignol_pout, showWarnings = FALSE)
+
+for (nth_row in 1:nrow(putative_monolignol_genes)) {
+    g <- putative_monolignol_genes$gid[nth_row]
+    gname <- putative_monolignol_genes$`Gene namea`[nth_row]
+    
+    p <- plot_three_datasets(
+        sc_data,
+        sp_data_outlier_rm, 
+        aspwood_log2_tpm_mtx_rbest, 
+        g,
+        sprintf("%s/%s_%s.pdf", monolignol_pout, gname, g),
+        width = 14,
+        height = 8
+    )
+}
+```

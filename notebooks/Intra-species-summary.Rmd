@@ -1,0 +1,569 @@
+---
+title: "Intra-species hourglass summary"
+params:
+  path_filenames: archive2/Hourglass-intra/Intra-species-hourglass/filenames.txt
+  path_summary: archive2/Hourglass-intra/Intra-species-hourglass/summary_updated.csv
+  analysis_id: Intra-species-hourglass
+  species: !r c("egr", "lch", "ptr")
+  metrics: !r c("spearman", "pearson", "Jensen-Shannon")
+  comparisons: null                 # NULL: use all comparisons, requiring completeness.
+  condition: "control"
+  adjust_method: "holm"
+  alpha: 0.05
+  bootstrap_interval_level: 0.90       # Diagnostic interval from saved bootstrap H.
+  diagnostic_plots: true               # Individual effects and mean-H null histograms.
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Joint evidence across samples
+
+For each **species × metric × comparison**, give each independent biological sample equal weight. Compare the observed mean of sample-specific hourglass scores with the means from matching permutation iterations:
+
+$$
+T_{\mathrm{obs}}=\frac{1}{n}\sum_i H_i,
+\qquad
+T_b=\frac{1}{n}\sum_i H_{ib},
+\qquad
+P=\frac{1+\sum_b I(T_b\ge T_{\mathrm{obs}})}{B+1}.
+$$
+
+Use existing scores without re-estimating trajectories or generating new permutations. Bootstrap rows are not part of the permutation null. Iteration labels are aligned across samples; their randomizations must have been generated independently using sample-specific seeds. Observed and permuted scores must use the same gene set and analysis procedure within each input analysis.
+
+Apply **one multiple-testing correction across all species × metrics × selected comparisons in this render**, after calculating their raw joint P values. For three species, three metrics, and one comparison, this family has nine tests. Keep analysis versions and conditions in separate renders; do not select the version with the smaller P value.
+
+**The statistic is unchanged:** both the observed statistic and every joint-null statistic are arithmetic means across the same inputs. Null scores are **not** concatenated across inputs. One row of `joint_null.csv` represents one joint randomized configuration, not one input or one biological replicate. The null standard deviation is not an estimate of between-plant variation.
+
+Inference remains conditional on the specified upstream randomized-pseudotime null and any trajectories, feature sets, and stage definitions held fixed. A numerical audit does not establish exchangeability or validate those upstream choices. Rejection is not a claim that every sample has an effect.
+
+Input filenames are read from `params$path_filenames` (one CSV path per line). The Snakemake rule writes an absolute-path manifest before rendering. For interactive Rmd debugging, provide your own manifest and set `path_filenames`, `path_summary`, and the required analysis identifiers through `params`.
+
+## Setup
+
+```{r Setup}
+knitr::opts_chunk$set(cache = FALSE, error = FALSE)
+
+fail <- function(...) stop(..., call. = FALSE)
+text_vector <- function(x) as.character(unlist(x, use.names = FALSE))
+scalar_text <- function(x) {
+  is.character(x) && length(x) == 1L && !is.na(x) && nzchar(x)
+}
+
+read_filename_manifest <- function(path) {
+  if (!scalar_text(path) || !file.exists(path)) {
+    fail("Set params$path_filenames to an existing filenames.txt manifest.")
+  }
+  paths <- readLines(path, warn = FALSE)
+  paths <- paths[nzchar(paths)]
+  if (!length(paths)) fail("The filenames.txt manifest is empty: ", path)
+  missing <- paths[!file.exists(paths)]
+  if (length(missing)) {
+    fail("Files listed in filenames.txt do not exist: ",
+         paste(utils::head(missing, 5L), collapse = ", "))
+  }
+  paths <- normalizePath(paths, mustWork = TRUE)
+  if (anyDuplicated(paths)) fail("Duplicate paths in filenames.txt: ", path)
+  paths
+}
+```
+
+
+```{r Read files}
+files <- read_filename_manifest(params$path_filenames)
+species_keep <- text_vector(params$species)
+metrics_keep <- text_vector(params$metrics)
+comparisons_keep <- text_vector(params$comparisons)
+# The manifest is read directly in this notebook; no command-line parsing.
+message("Loaded ", length(files), " key_data CSV files from: ",
+        normalizePath(params$path_filenames, mustWork = TRUE))
+if (!scalar_text(params$path_summary) || !scalar_text(params$analysis_id) ||
+    !scalar_text(params$condition)) {
+  fail("Set path_summary, analysis_id, and condition to nonempty strings.")
+}
+for (x in list(species_keep, metrics_keep)) {
+  if (!length(x) || anyNA(x) || any(!nzchar(x)) || anyDuplicated(x)) {
+    fail("species and metrics must be nonempty, unique character vectors.")
+  }
+}
+if (anyNA(comparisons_keep) || any(!nzchar(comparisons_keep)) ||
+    anyDuplicated(comparisons_keep)) fail("Invalid comparisons parameter.")
+if (!scalar_text(params$adjust_method) ||
+    !params$adjust_method %in% stats::p.adjust.methods) {
+  fail("Unsupported adjust_method.")
+}
+if (!is.numeric(params$alpha) || length(params$alpha) != 1L ||
+    !is.finite(params$alpha) || params$alpha <= 0 || params$alpha >= 1) {
+  fail("alpha must be between 0 and 1.")
+}
+
+outdir <- dirname(params$path_summary)
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+outdir <- normalizePath(outdir, mustWork = TRUE)
+path_summary <- file.path(outdir, basename(params$path_summary))
+sidecars <- file.path(outdir, c("sample_summary.csv", "joint_null.csv", "audit.csv"))
+if (path_summary %in% c(files, sidecars) || any(sidecars %in% files)) {
+  fail("Output paths must not overwrite inputs or each other.")
+}
+
+# Diagnostics only: none of these functions changes the observed/permuted test.
+if (!is.numeric(params$bootstrap_interval_level) ||
+    length(params$bootstrap_interval_level) != 1L ||
+    !is.finite(params$bootstrap_interval_level) ||
+    params$bootstrap_interval_level <= 0 || params$bootstrap_interval_level >= 1) {
+  fail("bootstrap_interval_level must be between 0 and 1.")
+}
+if (!is.logical(params$diagnostic_plots) || length(params$diagnostic_plots) != 1L ||
+    is.na(params$diagnostic_plots)) fail("diagnostic_plots must be TRUE or FALSE.")
+
+# Read the saved bootstrap H values separately; NEVER put them in the null matrix.
+add_component_diagnostics <- function(tab, group_columns, unit_column) {
+  raw <- lapply(files, function(path) {
+    read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  })
+  ids <- paste(tab$sample_id, tab$metric, tab$comparison, sep = "\r")
+  stopifnot(!anyDuplicated(ids))
+  prob <- c((1 - params$bootstrap_interval_level) / 2,
+            (1 + params$bootstrap_interval_level) / 2)
+  diagnostics <- lapply(seq_len(nrow(tab)), function(i) {
+    j <- match(tab$source_file[i], files)
+    if (is.na(j)) fail("Diagnostic source file is absent from the input list.")
+    d <- raw[[j]]
+    same <- d$sample_id == tab$sample_id[i] & d$metric == tab$metric[i] &
+      d$comparison == tab$comparison[i]
+    o <- d[which(same & d$data_type == "observed"), , drop = FALSE]
+    b <- d[which(same & d$data_type == "bootstrap"), , drop = FALSE]
+    stopifnot(nrow(o) == 1L)
+    if (nrow(b) && (anyNA(b$replicate_id) || any(!nzchar(b$replicate_id)) ||
+                   anyDuplicated(b$replicate_id))) {
+      fail(tab$sample_id[i], ": missing/duplicate bootstrap IDs.")
+    }
+    if (nrow(b) && !is.numeric(b$H)) fail("Non-numeric saved bootstrap H values.")
+    h <- b$H[is.finite(b$H)]
+    interval <- if (length(h) >= 2L) {
+      unname(stats::quantile(h, probs = prob, type = 7))
+    } else c(NA_real_, NA_real_)
+    reported <- function(name) {
+      if (!name %in% names(o)) return(NA_real_)
+      value <- suppressWarnings(as.numeric(o[[name]]))
+      if (length(value) != 1L || !is.finite(value)) return(NA_real_)
+      value
+    }
+    valid_reported <- reported("n_bootstrap_valid")
+    metadata_ok <- if (is.na(valid_reported)) NA else valid_reported == length(h)
+    data.frame(
+      bootstrap_n_saved = nrow(b), bootstrap_n_finite = length(h),
+      bootstrap_n_nonfinite = nrow(b) - length(h),
+      bootstrap_n_requested_reported = reported("n_bootstrap_requested"),
+      bootstrap_n_valid_reported = valid_reported,
+      bootstrap_n_failed_reported = reported("n_bootstrap_failed"),
+      bootstrap_metadata_ok = metadata_ok,
+      bootstrap_status = if (!nrow(b)) "not_available" else if (length(h) < 2L) {
+        "too_few_finite_draws"
+      } else if (isFALSE(metadata_ok)) "metadata_mismatch" else "available",
+      bootstrap_interval_level = params$bootstrap_interval_level,
+      H_bootstrap_median = if (length(h)) stats::median(h) else NA_real_,
+      H_bootstrap_lower = interval[1], H_bootstrap_upper = interval[2],
+      uncertainty_scope = "within_input_resampling_not_between_individuals",
+      row.names = NULL
+    )
+  })
+  tab <- cbind(tab, do.call(rbind, diagnostics))
+  if (any(tab$bootstrap_status == "metadata_mismatch")) {
+    warning("Saved bootstrap counts differ from declared n_bootstrap_valid; inspect component diagnostics.",
+            call. = FALSE)
+  }
+  # Descriptive influence check, not another hypothesis test. For inter-species
+  # pairs, remove ALL rows involving the same randomized biological individual.
+  tab$loo_unit <- as.character(tab[[unit_column]])
+  tab$mean_H_without_unit <- NA_real_
+  groups <- do.call(paste, c(tab[group_columns], sep = "\r"))
+  for (index in split(seq_len(nrow(tab)), groups)) {
+    for (i in index) {
+      retained <- index[tab$loo_unit[index] != tab$loo_unit[i]]
+      if (length(retained)) tab$mean_H_without_unit[i] <- mean(tab$H_observed[retained])
+    }
+  }
+  tab
+}
+
+# Separate plots for each test; intervals are within-input bootstrap percentiles,
+# not a confidence interval for the species-wide or population-average effect.
+plot_component_effects <- function(tab, group_columns, label_columns) {
+  old <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old), add = TRUE)
+  groups <- do.call(paste, c(tab[group_columns], sep = " | "))
+  for (label in unique(groups)) {
+    d <- tab[groups == label, , drop = FALSE]
+    labels <- do.call(paste, c(d[label_columns], sep = " vs "))
+    y <- rev(seq_len(nrow(d)))
+    xr <- range(c(0, d$H_observed, d$H_bootstrap_lower, d$H_bootstrap_upper),
+                finite = TRUE)
+    padding <- max(diff(xr) * 0.08, 0.01)
+    graphics::par(mar = c(4.2, 15, 3.5, 1))
+    graphics::plot(d$H_observed, y, xlim = xr + c(-padding, padding),
+                   ylim = c(0.5, nrow(d) + 0.5), pch = 19, yaxt = "n",
+                   ylab = "", xlab = "Observed hourglass score H", main = label)
+    graphics::axis(2, at = y, labels = labels, las = 1, cex.axis = 0.7)
+    valid <- is.finite(d$H_bootstrap_lower) & is.finite(d$H_bootstrap_upper)
+    graphics::segments(d$H_bootstrap_lower[valid], y[valid],
+                       d$H_bootstrap_upper[valid], y[valid])
+    graphics::abline(v = 0, lty = 3)
+    graphics::mtext(sprintf("Bars: %.0f%% within-input bootstrap percentile intervals; no bar when unavailable",
+                            100 * params$bootstrap_interval_level),
+                    side = 1, line = 3, cex = 0.7)
+  }
+  invisible(NULL)
+}
+plot_mean_nulls <- function(summary, null, group_columns) {
+  old <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old), add = TRUE)
+  for (i in seq_len(nrow(summary))) {
+    s <- summary[i, , drop = FALSE]
+    keep <- rep(TRUE, nrow(null))
+    for (nm in group_columns) keep <- keep & null[[nm]] == s[[nm]]
+    x <- null$mean_H_null[keep]
+    label <- paste(unlist(s[group_columns], use.names = FALSE), collapse = " | ")
+    if (!length(x)) {
+      message(label, ": no mean-H null; inspect p_method and p_group.")
+      next
+    }
+    graphics::par(mar = c(4.5, 4.2, 4, 1))
+    graphics::hist(x, breaks = "FD", xlim = range(c(x, s$mean_H)),
+                   main = label, xlab = "Mean H across inputs in ONE joint permutation",
+                   ylab = "Joint permutations")
+    graphics::abline(v = s$mean_H, lwd = 2)
+    graphics::mtext(sprintf("Observed mean H = %.4f; B = %d; exceedances = %d; P = %.4g; adjusted P = %.4g",
+                            s$mean_H, s$n_joint_permutation, s$n_null_ge_observed,
+                            s$p_joint, s$p_adjusted), side = 3, line = 0.3, cex = 0.7)
+  }
+  invisible(NULL)
+}
+
+params
+```
+
+## Read and validate the key data
+
+Species is the prefix of `sample_id` before the first underscore. Each input file must contain one sample and one metric. Every declared sample must have every requested metric and comparison. `individual_id` is used to reject repeated individuals within a species-level test; metadata alone cannot establish that samples really are independent biological preparations.
+
+```{r Read key data}
+required <- c("sample_id", "individual_id", "condition", "metric", "comparison",
+              "data_type", "replicate_id", "seed", "H", "n_permutation")
+
+read_scores <- function(path) {
+  d <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  missing <- setdiff(required, names(d))
+  if (length(missing)) fail(basename(path), ": missing ", paste(missing, collapse = ", "))
+  if (!nrow(d) || anyNA(d$data_type) ||
+      any(!d$data_type %in% c("observed", "permutation", "bootstrap"))) {
+    fail(basename(path), ": invalid or missing data_type.")
+  }
+  d <- d[d$data_type %in% c("observed", "permutation"), , drop = FALSE]
+  if (!nrow(d)) fail(basename(path), ": no observed/permutation scores.")
+  for (nm in c("sample_id", "individual_id", "condition", "metric")) {
+    if (anyNA(d[[nm]]) || length(unique(d[[nm]])) != 1L ||
+        !nzchar(as.character(d[[nm]][1]))) {
+      fail(basename(path), ": expected one nonmissing ", nm, ".")
+    }
+    d[[nm]] <- as.character(d[[nm]])
+  }
+  if (anyNA(d$comparison) || any(!nzchar(d$comparison))) fail("Missing comparison: ", path)
+  if (d$condition[1] != params$condition) fail("Unexpected condition: ", path)
+  if (!d$metric[1] %in% metrics_keep) fail("Unexpected metric: ", path)
+  d$species <- sub("_.*$", "", d$sample_id)
+  if (!d$species[1] %in% species_keep) fail("Unexpected species prefix: ", path)
+  if (length(comparisons_keep)) {
+    d <- d[d$comparison %in% comparisons_keep, , drop = FALSE]
+  }
+  if (!nrow(d)) fail("No requested comparison in: ", path)
+  if (!is.numeric(d$H) || any(!is.finite(d$H))) fail("Non-finite H: ", path)
+  if (!is.numeric(d$n_permutation) || any(!is.finite(d$n_permutation)) ||
+      any(d$n_permutation < 1 | d$n_permutation != floor(d$n_permutation))) {
+    fail("Invalid n_permutation: ", path)
+  }
+  d$source_file <- path
+  d$source_md5 <- unname(tools::md5sum(path))
+  d
+}
+
+# Keep shared columns; required fields above must be present in every file.
+inputs <- lapply(files, read_scores)
+shared_columns <- Reduce(intersect, lapply(inputs, names))
+scores <- do.call(rbind, lapply(inputs, function(d) d[, shared_columns, drop = FALSE]))
+rownames(scores) <- NULL
+if (!length(comparisons_keep)) comparisons_keep <- sort(unique(scores$comparison))
+
+manifest <- unique(scores[c("source_file", "sample_id", "individual_id", "species", "metric")])
+if (anyDuplicated(manifest[c("sample_id", "metric")])) fail("Duplicate sample/metric files.")
+if (!setequal(unique(manifest$species), species_keep)) fail("A requested species is missing.")
+sample_metadata <- unique(manifest[c("sample_id", "individual_id", "species")])
+if (anyDuplicated(sample_metadata$sample_id)) fail("Inconsistent individual/species metadata.")
+if (anyDuplicated(sample_metadata[c("species", "individual_id")])) {
+  fail("Multiple sample_ids share an individual_id within a species. Resolve biological replication first.")
+}
+
+# A complete sample x metric x comparison grid prevents silently smaller families.
+expected <- expand.grid(
+  sample_id = sample_metadata$sample_id, metric = metrics_keep,
+  comparison = comparisons_keep, stringsAsFactors = FALSE
+)
+key <- function(d) paste(d$sample_id, d$metric, d$comparison, sep = "\r")
+observed <- scores[scores$data_type == "observed", , drop = FALSE]
+if (anyDuplicated(key(observed)) || !setequal(key(observed), key(expected)) ||
+    !setequal(key(scores), key(expected))) {
+  fail("Expected exactly one observed result and permutations for every sample x metric x comparison.")
+}
+
+# Validate each component test, then save a descriptive sample-level summary.
+component_data <- split(scores, key(scores))
+components <- lapply(component_data, function(d) {
+  o <- d[d$data_type == "observed", , drop = FALSE]
+  p <- d[d$data_type == "permutation", , drop = FALSE]
+  label <- paste(o$sample_id, o$metric, o$comparison, sep = " / ")
+  B <- unique(d$n_permutation)
+  if (length(B) != 1L || B > .Machine$integer.max || nrow(p) != B) {
+    fail(label, ": permutation count differs from n_permutation.")
+  }
+  if (anyNA(p$replicate_id) || any(!grepl("^Permutation-[1-9][0-9]*$", p$replicate_id))) {
+    fail(label, ": expected replicate_id values of the form Permutation-1, ...")
+  }
+  p$iteration <- as.integer(sub("^Permutation-", "", p$replicate_id))
+  if (anyNA(p$iteration) || anyDuplicated(p$iteration) ||
+      !setequal(p$iteration, seq_len(B))) fail(label, ": incomplete/duplicated iteration IDs.")
+  p <- p[order(p$iteration), , drop = FALSE]
+  if (!is.numeric(p$seed) || any(!is.finite(p$seed)) || anyDuplicated(p$seed) ||
+      any(p$seed != floor(p$seed)) || any(abs(p$seed) > .Machine$integer.max)) {
+    fail(label, ": missing, duplicated, or invalid integer seeds.")
+  }
+  if (all(c("Early", "Middle", "Late") %in% names(d))) {
+    stage_H <- pmin(d$Middle - d$Early, d$Middle - d$Late)
+    if (any(!is.finite(stage_H)) || any(abs(d$H - stage_H) > 1e-8)) {
+      fail(label, ": H does not match min(Middle - Early, Middle - Late).")
+    }
+  }
+  list(observed = o, permutation = p)
+})
+
+sample_summary <- do.call(rbind, lapply(components, function(x) {
+  fields <- intersect(c("species", "sample_id", "individual_id", "condition", "metric",
+                        "comparison", "Early", "Middle", "Late", "M_minus_E", "M_minus_L",
+                        "H", "n_cells", "n_genes", "n_bins", "n_permutation",
+                        "source_file", "source_md5"), names(x$observed))
+  z <- x$observed[, fields, drop = FALSE]
+  names(z)[names(z) == "H"] <- "H_observed"
+  z$n_null_ge_observed <- sum(x$permutation$H >= z$H_observed)
+  z$p_empirical <- (1 + z$n_null_ge_observed) / (1 + nrow(x$permutation))
+  z
+}))
+rownames(sample_summary) <- NULL
+sample_summary$analysis_id <- params$analysis_id
+sample_summary <- add_component_diagnostics(
+  sample_summary, c("species", "metric", "comparison"), "individual_id"
+)
+sample_metadata
+```
+
+## Joint permutation tests
+
+Use **all** saved permutation iterations. Require identical complete iteration-ID sets across samples in each test; do not match seeds or CSV row positions. Reject identical cross-sample seed schedules. Reuse of a sample's schedule across metrics is allowed. This diagnostic does not prove random-stream independence.
+
+```{r Joint tests}
+tests <- expand.grid(species = species_keep, metric = metrics_keep,
+                     comparison = comparisons_keep, stringsAsFactors = FALSE)
+
+combine_test <- function(test) {
+  ids <- sample_metadata$sample_id[sample_metadata$species == test$species]
+  lookup <- data.frame(sample_id = ids, metric = test$metric, comparison = test$comparison)
+  selected <- components[key(lookup)]
+  p <- lapply(selected, function(x) x$permutation)
+  H_obs <- vapply(selected, function(x) x$observed$H, numeric(1))
+  iterations <- p[[1]]$iteration
+  if (!all(vapply(p, function(z) identical(z$iteration, iterations), logical(1)))) {
+    fail(test$species, " / ", test$metric, " / ", test$comparison,
+         ": samples have different permutation ID sets. Complete the runs first.")
+  }
+  if (length(ids) > 1L) {
+    for (i in seq.int(2L, length(ids))) for (j in seq_len(i - 1L)) {
+      if (identical(as.numeric(p[[i]]$seed), as.numeric(p[[j]]$seed))) {
+        fail("Identical seed schedules: ", ids[i], " and ", ids[j],
+             ". Use regenerated sample-specific permutations.")
+      }
+    }
+  }
+  H_null <- do.call(cbind, lapply(p, function(z) z$H))
+  T_obs <- mean(H_obs)
+  T_null <- rowMeans(H_null)
+  B <- length(T_null)
+  n_ge <- sum(T_null >= T_obs)
+  summary <- data.frame(
+    analysis_id = params$analysis_id, condition = params$condition, test,
+    n_samples = length(ids), samples = paste(ids, collapse = ";"),
+    test_scope = if (length(ids) > 1L) "joint_samples" else "single_sample",
+    p_method = if (length(ids) > 1L) "independent_sample_mean_permutation" else "single_sample_permutation",
+    mean_H = T_obs, median_H = median(H_obs), min_H = min(H_obs), max_H = max(H_obs),
+    sd_H = if (length(H_obs) > 1L) sd(H_obs) else NA_real_,
+    n_positive_H = sum(H_obs > 0), fraction_positive_H = mean(H_obs > 0),
+    n_joint_permutation = B, n_null_ge_observed = n_ge,
+    null_mean_H = mean(T_null), null_sd_H = sd(T_null),
+    null_min_H = min(T_null), null_max_H = max(T_null),
+    at_minimum_resolution = n_ge == 0L,
+    observed_minus_null_mean = T_obs - mean(T_null),
+    p_joint = (1 + n_ge) / (B + 1), p_resolution = 1 / (B + 1),
+    row.names = NULL
+  )
+  null <- data.frame(analysis_id = params$analysis_id, condition = params$condition,
+                     species = test$species, metric = test$metric,
+                     comparison = test$comparison, iteration = iterations,
+                     mean_H_null = T_null)
+  list(summary = summary, null = null)
+}
+
+joint <- lapply(seq_len(nrow(tests)), function(i) combine_test(tests[i, , drop = FALSE]))
+summary_results <- do.call(rbind, lapply(joint, function(x) x$summary))
+joint_null <- do.call(rbind, lapply(joint, function(x) x$null))
+rownames(summary_results) <- NULL
+rownames(joint_null) <- NULL
+```
+
+## Multiple-testing correction
+
+The correction is applied **once to the complete vector of raw joint P values**. Sample-level P values are descriptive and are not inputs to this calculation. No correction is performed across permutation iterations.
+
+```{r Adjust P values}
+summary_results$p_adjusted <- stats::p.adjust(
+  summary_results$p_joint, method = params$adjust_method
+)
+summary_results$adjust_method <- params$adjust_method
+summary_results$n_tests_in_family <- nrow(summary_results)
+summary_results$alpha <- params$alpha
+summary_results$reject_joint_null <- summary_results$p_adjusted <= params$alpha
+summary_results$hourglass_supported <- summary_results$reject_joint_null &
+  summary_results$mean_H > 0
+
+# Export below, only after the independent numerical audit passes.
+
+summary_results[c("species", "metric", "comparison", "n_samples", "test_scope",
+                  "mean_H", "n_positive_H", "n_joint_permutation",
+                  "n_null_ge_observed", "p_resolution", "at_minimum_resolution", "p_joint", "p_adjusted",
+                  "hourglass_supported")]
+```
+
+`hourglass_supported` requires a positive observed mean H and rejection of the joint randomized-pseudotime null at the chosen adjusted threshold. This is not a test that every sample has an effect or that the population-average true H is positive. For `test_scope = single_sample`, the raw joint P equals that sample's permutation P; it is **not evidence of biological replication**.
+
+The number of preparations is recorded in `n_samples`. Sample IDs are treated as independent preparations only if the underlying experimental design supports that interpretation.
+
+`summary.csv` contains joint tests and adjusted P values; `sample_summary.csv` contains component scores, unadjusted sample P values, and input provenance; `joint_null.csv` contains the combined permutation scores for auditing.
+
+## Individual effects and uncertainty
+
+Dots show **observed H**. Bars use the central `bootstrap_interval_level` percentile interval of the **saved, finite bootstrap H values for that input** (default 90%; type-7 quantiles). Missing bootstrap draws are reported, not replaced. These are within-input resampling intervals, **not between-plant uncertainty**, not species-level confidence intervals, and not evidence that spatial dependence was handled upstream. Bootstrap intervals do not determine any permutation P value. `bootstrap_n_*` columns distinguish saved, finite, and declared counts. Intervals are conditional on usable draws; missing H values or failed resamples can affect their interpretation. They do not by themselves establish nominal coverage.
+
+`mean_H_without_unit` is a **descriptive** leave-one-unit-out mean, without a P value or an additional significance flag. It is `NA` when no other unit remains. Negative and nonsignificant observed scores are retained. Component P values are unadjusted diagnostics, not the inputs to the group test.
+
+```{r Sample summary}
+sample_summary[c("species", "sample_id", "metric", "comparison", "H_observed",
+                 "H_bootstrap_lower", "H_bootstrap_upper", "bootstrap_n_finite",
+                 "bootstrap_status", "mean_H_without_unit", "p_empirical")]
+```
+
+```{r Sample effect plots, fig.width=11, fig.height=6}
+if (params$diagnostic_plots) {
+  plot_component_effects(sample_summary, c("species", "metric", "comparison"), "sample_id")
+}
+```
+
+## Joint-null distributions
+
+The vertical line is the observed mean H. Histograms contain per-iteration **means**, never pooled individual null scores.
+
+```{r Joint null plots, fig.width=8, fig.height=5}
+if (params$diagnostic_plots) {
+  plot_mean_nulls(summary_results, joint_null, c("species", "metric", "comparison"))
+}
+```
+
+## Numerical audit and permutation resolution
+
+This section independently recomputes the observed mean and the per-iteration null means from the imported `scores` table using `aggregate()`, rather than the `components`/`cbind()` route above. It compares them with the exported results. This checks summary arithmetic, not the validity of the upstream pseudotime shuffling, gene selection, or biological-replicate assumptions.
+
+When `n_null_ge_observed = 0`, the P value is exactly `1 / (B + 1)`. Such tests share the minimum reportable P value for this permutation count; their effect sizes and underlying tail probabilities need not be equal. Zero exceedances do not establish that the underlying tail probability is zero or below this floor.
+
+```{r Independent numerical audit}
+pvalue_audit <- do.call(rbind, lapply(seq_len(nrow(summary_results)), function(i) {
+  s <- summary_results[i, , drop = FALSE]
+  d <- scores[scores$species == s$species & scores$metric == s$metric &
+                scores$comparison == s$comparison, , drop = FALSE]
+  o <- d[d$data_type == "observed", , drop = FALSE]
+  p <- d[d$data_type == "permutation", , drop = FALSE]
+
+  # Each joint iteration must contain exactly one H from every sample.
+  coverage <- table(p$replicate_id, p$sample_id)
+  stopifnot(
+    nrow(o) == s$n_samples,
+    !anyDuplicated(o$sample_id),
+    setequal(o$sample_id, colnames(coverage)),
+    all(coverage == 1L)
+  )
+  reference <- aggregate(H ~ replicate_id, data = p, FUN = mean)
+  reference$iteration <- as.integer(sub("^Permutation-", "", reference$replicate_id))
+  reference <- reference[order(reference$iteration), , drop = FALSE]
+  observed_mean <- mean(o$H)
+  null_means <- reference$H
+  B <- length(null_means)
+  k <- sum(null_means >= observed_mean)
+  p_recalculated <- (k + 1) / (B + 1)
+
+  stored <- joint_null[joint_null$species == s$species &
+                         joint_null$metric == s$metric &
+                         joint_null$comparison == s$comparison, , drop = FALSE]
+  stopifnot(!anyDuplicated(stored$iteration),
+            setequal(reference$iteration, stored$iteration))
+  stored <- stored[match(reference$iteration, stored$iteration), , drop = FALSE]
+  null_max_abs_difference <- max(abs(null_means - stored$mean_H_null))
+
+  stopifnot(
+    B == s$n_joint_permutation,
+    k == s$n_null_ge_observed,
+    abs(observed_mean - s$mean_H) < 1e-12,
+    abs(mean(null_means) - s$null_mean_H) < 1e-12,
+    abs(p_recalculated - s$p_joint) < 1e-12,
+    null_max_abs_difference < 1e-12
+  )
+  data.frame(
+    species = s$species, metric = s$metric, comparison = s$comparison,
+    n_samples = nrow(o), mean_H = observed_mean,
+    B = B, n_null_ge_observed = k, p_recalculated = p_recalculated,
+    at_minimum_resolution = k == 0L,
+    null_min = min(null_means), null_max = max(null_means),
+    null_sd = sd(null_means),
+    null_max_abs_difference = null_max_abs_difference,
+    row.names = NULL
+  )
+}))
+pvalue_audit$p_adjusted_recalculated <- stats::p.adjust(
+  pvalue_audit$p_recalculated, method = params$adjust_method
+)
+stopifnot(all(abs(pvalue_audit$p_adjusted_recalculated -
+                    summary_results$p_adjusted) < 1e-12))
+pvalue_audit$audit_pass <- TRUE
+pvalue_audit
+```
+
+No P values or testing families are changed by the audit. It stops if the two calculation routes disagree. `audit.csv` now records these checks on disk.
+
+```{r Export audited tables}
+write.csv(summary_results, path_summary, row.names = FALSE, na = "NA")
+write.csv(sample_summary, sidecars[1], row.names = FALSE, na = "NA")
+write.csv(joint_null, sidecars[2], row.names = FALSE, na = "NA")
+write.csv(pvalue_audit, sidecars[3], row.names = FALSE, na = "NA")
+```
+
+## Session information
+
+```{r Session information}
+sessionInfo()
+```

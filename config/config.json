@@ -29,9 +29,20 @@
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch1/fastq_path/HS18186/YCL/"
             ],
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_count_TenX_Ptr/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
                 "colors": ["#1F77B4","#8C564B","#FF7F0F","#2AA02A","#F8E71C","#9467BD","#D62728","#E377C2","#9B9B9B","#4B4B4B"]
-            } 
+            },
+            "metacell_params": {
+                "T_tot": 20,
+                "T_top3": 1,
+                "T_szcor": -0.01,
+                "T_vm": 0.2,
+                "T_niche": 0.05,
+                "K": 40,
+                "min_mc_size": 50,
+                "alpha": 3
+            }
         },
         {
             "name": "ptr_tenx_batch2",
@@ -41,7 +52,50 @@
             "fastq_path": [
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch2/TEN_Populus_trichocarpa_Batch2_20G_150bp/rawData",
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Populus_trichocarpa/TEN_Populus_trichocarpa_Batch2/TEN_Populus_trichocarpa_Batch2_80G_150bp/rawData"
-            ]
+            ],
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_batch2"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv1",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv1"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv2",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv2"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv3",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv3"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv4",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv4"
+            }
+        },
+        {
+            "name": "ptr_tenx_tsv5",
+            "platform": "10x",
+            "species": "ptr",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/chiachenchu/project_scRNAed/outputs/CellRanger/count/ptr_tenx_tsv5"
+            }
         },
         {
             "name": "ptr_nextseq_batch1",
@@ -65,7 +119,10 @@
             "fastq_path": [
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Eucalyptus_grandis/FASTQ/1/rawData",
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Eucalyptus_grandis/FASTQ/2/rawData"
-            ] 
+            ],
+            "results_old": {
+                "10x": "outputs/cellranger/count/egr_tenx_batch1"
+            }
         },
         {
             "name": "egr_nextseq_batch1",
@@ -74,6 +131,7 @@
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Egr_batch1",
             "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt",
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
                 "colors": ["#9467BD","#F8E71C","#8C564B","#1F77B4","#2AA02A","#FF7F0F","#D62728","#E377C2","#4B4B4B","#9B9B9B"]
             }
@@ -83,7 +141,10 @@
             "platform": "nextseq",
             "species": "egr",
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Egr_batch2",
-            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt"
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Eg_CDS.txt",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Egr2/"
+            }
         },
         {
             "name": "tar_tenx_batch1",
@@ -92,7 +153,10 @@
             "sample_names": "TAR",
             "fastq_path": [
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Trochodendron_aralioides/rawData"
-            ]
+            ],
+            "results_old": {
+              "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Tar3/"
+            }
         },
         {
             "name": "tar_nextseq_batch1",
@@ -101,6 +165,7 @@
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Tar_batch1",
             "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt",
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar/outs/analysis/clustering/kmeans_18_clusters/clusters.csv",
                 "colors": ["#1F77B4","#E377C2","#55A3FF","#8C564B","#9467BD","#FF7F0F","#46CBE5","#F8E71C","#2AA02A","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B","#9B9B9B"]
             }
@@ -110,7 +175,10 @@
             "platform": "nextseq",
             "species": "tar",
             "umi_dir": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Tar_batch2",
-            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt"
+            "cds_list": "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/NextSeq/20220607_MARS-seq_organized/UMItable/Ta_CDS.txt",
+            "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_MARSseq_Tar2"
+            }
         },
         {
             "name": "lch_tenx_batch1",
@@ -121,6 +189,7 @@
                 "/home/woodydrylab/YCLlab_raw_data/YCLlab_Rawdata/RNA-seq/03_Single_cell_sequencing/TENxGenomics/TEN_Liriodendron_chinense/TEN_Liriodendron_chinense_Batch1/Rawdata/scRNAseq"
             ],
             "results_old": {
+                "10x": "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Lch",
                 "clustering": "/home/f06b22037/DiskArray_f06b22037/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Lch/outs/analysis/clustering/kmeans_10_clusters/clusters.csv",
                 "colors": ["#1F77B4","#8C564B","#FF7F0F","#D62728","#F8E71C","#E377C2","#9467BD","#2AA02A","#63EE9B","#9B9B9B"]
             }
@@ -201,7 +270,8 @@
             "sample_names": "osRoot1",
             "fastq_path": [
                 "rawdata/Osa_root/"
-            ]
+            ],
+            "id_mapping": "references/Osa/annotation/Oryza_sativa.IRGSP-1.0.60.chr.transcript_id_to_gene_id.tsv"
         },
         {
             "name": "osa_root_bio2",
@@ -210,7 +280,8 @@
             "sample_names": "osRoot2",
             "fastq_path": [
                 "rawdata/Osa_root"
-            ]
+            ],
+            "id_mapping": "references/Osa/annotation/Oryza_sativa.IRGSP-1.0.60.chr.transcript_id_to_gene_id.tsv"
         }
     ],
     "references": [
@@ -253,6 +324,21 @@
         }
     ],
     "seurat_integrated": {
+        "four_trees_batch1": {
+            "member": [
+                "ptr_tenx_batch1",
+                "egr_nextseq_batch1",
+                "tar_nextseq_batch1",
+                "lch_tenx_batch1"
+            ],
+            "params": {
+                "integration_order": "-1,-2,1,-3,2,-4",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "nfeatures": 2000,
+                "n_pcs": 30
+            }
+        },
         "ptr_tenx_batch1": {
             "member": [
                 "ptr_tenx_batch1"
@@ -273,7 +359,8 @@
                 "integration_order": "-1,-2",
                 "n_feature_cutoff_on_sample": 2000,
                 "n_barcode_cutoff_on_sample": 100,
-                "n_pcs": 30
+                "n_pcs": 50,
+                "nfeatures": 3000
             }
         },
         "ptr_all": {
@@ -299,13 +386,71 @@
                 "lch_tenx_batch1", "lch_tenx_batch2", "lch_tenx_batch5"
             ],
             "params": {
-                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-15,9,11",
+                "integration_order": "-1,-2,-3,-4,1,2,-6,-7,-5,4,3,5,-9,-10,-8,7,6,8,-11,-12,10,-13,9,11",
                 "n_feature_cutoff_on_sample": 2000,
                 "n_barcode_cutoff_on_sample": 100,
+                "nfeatures": 2000,
                 "n_pcs": 30
+            },
+            "metacell_params": {
+                "ptr_tenx_batch1": {
+                    "scm_n_downsamp_gstat": 300,
+                    "T_tot": 20,
+                    "T_top3": 1,
+                    "T_szcor": -0.01,
+                    "T_vm": 0.2,
+                    "T_niche": 0.05,
+                    "K": 40,
+                    "min_mc_size": 50,
+                    "alpha": 3
+                },
+                "ptr_tenx_batch2": {
+                    "scm_n_downsamp_gstat": 300
+                },
+                "ptr_nextseq_batch1": {
+                    "scm_n_downsamp_gstat": 100
+                },
+                "ptr_nextseq_batch2": {
+                    "scm_n_downsamp_gstat": 30
+                },
+                "egr_tenx_batch1": {
+                    "scm_n_downsamp_gstat": 30
+                },
+                "egr_nextseq_batch1": {
+                    "scm_n_downsamp_gstat": 30,
+                    "T_tot": 200,
+                    "T_top3": 0.8,
+                    "T_szcor": -0.01,
+                    "T_vm": 0.2,
+                    "T_niche": 0.08,
+                    "K": 100,
+                    "min_mc_size": 20,
+                    "alpha": 2                    
+                },
+                "egr_nextseq_batch2": {
+                    "scm_n_downsamp_gstat": 30
+                },
+                "tar_tenx_batch1": {
+                    "scm_n_downsamp_gstat": 100
+                },
+                "tar_nextseq_batch1": {
+                    "scm_n_downsamp_gstat": 30
+                },
+                "tar_nextseq_batch2": {
+                    "scm_n_downsamp_gstat": 30
+                },
+                "lch_tenx_batch1": {
+                    "scm_n_downsamp_gstat": 50
+                },
+                "lch_tenx_batch2": {
+                    "scm_n_downsamp_gstat": 50
+                },
+                "lch_tenx_batch5": {
+                    "scm_n_downsamp_gstat": 50
+                }
             }
         },
-        "test_all": {
+        "all": {
             "member": [
                 "ptr_tenx_batch1", "ptr_tenx_batch2",
                 "ptr_nextseq_batch1", "ptr_nextseq_batch2",
@@ -325,6 +470,45 @@
                 "n_pcs": 30
             }
         },
+        "ath_leaf_2_ptr": {
+            "member": [
+                "ptr_tenx_batch1",
+                "ath_leaf"
+            ],
+            "params": {
+                "integration_order": "-1,-2",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "nfeatures": 2000,
+                "n_pcs": 30
+            }
+        },
+        "ath_root_2_ptr": {
+            "member": [
+                "ptr_tenx_batch1",
+                "ath_root_bio1", "ath_root_bio2", "ath_root_bio3"
+            ],
+            "params": {
+                "integration_order": "-2,-3,1,-4,-1,2",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "nfeatures": 2000,
+                "n_pcs": 30
+            }
+        },
+        "osa_root_2_ptr": {
+            "member": [
+                "ptr_tenx_batch1",
+                "osa_root_bio1", "osa_root_bio2"
+            ],
+            "params": {
+                "integration_order": "-2,-3,-1,1",
+                "n_feature_cutoff_on_sample": 2000,
+                "n_barcode_cutoff_on_sample": 100,
+                "nfeatures": 2000,
+                "n_pcs": 30
+            }
+        },
         "group1": {
             "member": [
                 "tung_batch1",
@@ -337,6 +521,29 @@
                 "n_barcode_cutoff_on_sample": 100,
                 "n_pcs": 30
             }
+        }
+    },
+    "test-metacell": {
+        "1": {
+            "scm_n_downsamp_gstat": 30,
+            "gset_in": "outputs/seurat_integration/groups/four_trees/rs17/metacell/ptr_tenx_batch1_gset.rds",
+            "K": 100,
+            "min_mc_size": 20,
+            "alpha": 2      
+        },
+        "2": {
+            "scm_n_downsamp_gstat": 30,
+            "gset_in": "outputs/seurat_integration/groups/four_trees/rs17/metacell/ptr_tenx_batch1_gset.rds",
+            "K": 50,
+            "min_mc_size": 50,
+            "alpha": 10      
+        },
+        "3": {
+            "scm_n_downsamp_gstat": 30,
+            "gset_in": "outputs/seurat_integration/groups/four_trees/rs17/metacell/ptr_tenx_batch1_gset.rds",
+            "K": 100,
+            "min_mc_size": 50,
+            "alpha": 10      
         }
     }
 }
