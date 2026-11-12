@@ -1,0 +1,475 @@
+---
+title: "Inter-species hourglass summary"
+params:
+  key_data: null
+  path_summary: null
+  analysis_id: null
+  metrics: !r c("spearman", "pearson", "Jensen-Shannon")
+  comparisons: null                    # Infer actual comparison labels (e.g. Fiber-Fiber).
+  species_pairs: null                  # Ordered labels: e.g. lch__vs__egr.
+  condition_1: "control"
+  condition_2: "control"
+  permuted_side: 1                     # Source notebook permutes sample 1; fixes sample 2.
+  shared_query_mode: "bonferroni"       # bonferroni | error | synchronized
+  adjust_method: "holm"
+  alpha: 0.05
+output:
+  html_document:
+    df_print: paged
+---
+
+# Evidence across inter-species sample pairs
+
+Read the explicit `sample_id_1`, `sample_id_2`, `species_1`, `species_2`, and
+individual IDs in the CSVs. Do not split a filename or combined `sample_id` to
+recover these fields. **Keep species-pair orientation:** `lch__vs__egr` and
+`egr__vs__lch` are different analyses. Preserve the comparisons actually present;
+the uploaded example contains `Fiber-Fiber`, not both branches.
+
+The supplied source workflow randomizes sample 1 and holds sample 2 fixed. The
+joint mean test is therefore **conditional on the fixed reference datasets**.
+`permuted_side` must match the upstream workflow; the CSV alone does not prove
+which side was permuted. Changing this parameter cannot change saved permutations.
+
+## Reused samples and the group P value
+
+* With distinct randomized biological individuals, use the existing joint mean-H
+  permutation test. Reuse of a fixed reference is allowed for this conditional
+  test, but does not create additional biological reference replicates.
+* With a reused randomized individual, the default `shared_query_mode: bonferroni`
+  uses `min(1, number_of_pairs * min(pair_P))`. This conservative global-null test
+  does not require pair independence. It is **not a test of mean H**; `p_joint`
+  and joint-null diagnostics are left `NA`, while `p_group` records the result.
+* `synchronized` explicitly asserts that the **same cell-to-pseudotime shuffle**
+  was reused in every pair containing the same randomized sample, within each
+  iteration. Matching seeds are checked but are insufficient proof: cell order,
+  eligible cells and upstream random calls must also match. Different randomized
+  individuals must have independent schedules. Never enable this merely to bypass
+  an error. `error` stops instead of using the conservative fallback.
+
+`p_group` is the raw P value used for the report's single Holm correction across
+all ordered species-pair × metric × comparison tests. For a permutation test it
+is identical to `p_joint`. A group rejection is evidence against all its component
+nulls being true, not proof that every pair or species has an hourglass effect.
+
+## Setup
+
+```{r Setup}
+knitr::opts_chunk$set(cache = FALSE, error = FALSE)
+fail <- function(...) stop(..., call. = FALSE)
+text_vector <- function(x) as.character(unlist(x, use.names = FALSE))
+scalar_text <- function(x) {
+  is.character(x) && length(x) == 1L && !is.na(x) && nzchar(x)
+}
+require_columns <- function(d, required, label) {
+  missing <- setdiff(required, names(d))
+  if (length(missing)) fail(label, ": missing ", paste(missing, collapse = ", "))
+}
+constant_text <- function(d, fields, label) {
+  for (nm in fields) {
+    x <- as.character(d[[nm]])
+    if (anyNA(x) || any(!nzchar(x)) || length(unique(x)) != 1L) {
+      fail(label, ": expected one nonmissing ", nm, ".")
+    }
+    d[[nm]] <- x
+  }
+  d
+}
+# Preserve optional metadata instead of silently dropping it across files.
+bind_fill <- function(xs) {
+  fields <- Reduce(union, lapply(xs, names))
+  out <- do.call(rbind, lapply(xs, function(x) {
+    for (nm in setdiff(fields, names(x))) x[[nm]] <- NA
+    x[, fields, drop = FALSE]
+  }))
+  rownames(out) <- NULL
+  out
+}
+key <- function(d) paste(d$sample_id, d$metric, d$comparison, sep = "\r")
+
+files <- text_vector(params$key_data)
+metrics_keep <- text_vector(params$metrics)
+comparisons_keep <- text_vector(params$comparisons)
+if (!length(files) || anyNA(files) || any(!file.exists(files))) {
+  fail("Set key_data to existing CSV files.")
+}
+files <- normalizePath(files, mustWork = TRUE)
+if (anyDuplicated(files)) fail("Duplicate input paths.")
+if (!scalar_text(params$path_summary) || !scalar_text(params$analysis_id)) {
+  fail("Set path_summary and analysis_id to nonempty strings.")
+}
+if (!length(metrics_keep) || anyNA(metrics_keep) || any(!nzchar(metrics_keep)) ||
+    anyDuplicated(metrics_keep)) fail("Invalid metrics.")
+if (anyNA(comparisons_keep) || any(!nzchar(comparisons_keep)) ||
+    anyDuplicated(comparisons_keep)) fail("Invalid comparisons.")
+if (!scalar_text(params$adjust_method) ||
+    !params$adjust_method %in% stats::p.adjust.methods) fail("Invalid adjust_method.")
+if (!is.numeric(params$alpha) || length(params$alpha) != 1L ||
+    !is.finite(params$alpha) || params$alpha <= 0 || params$alpha >= 1) fail("Invalid alpha.")
+
+outdir <- dirname(params$path_summary)
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+outdir <- normalizePath(outdir, mustWork = TRUE)
+path_summary <- file.path(outdir, basename(params$path_summary))
+
+read_base <- function(path, extra_fields) {
+  d <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  require_columns(d, c("sample_id", "metric", "comparison", "data_type",
+                       "replicate_id", "seed", "H", "n_permutation", extra_fields), path)
+  if (!nrow(d) || anyNA(d$data_type) ||
+      any(!d$data_type %in% c("observed", "permutation", "bootstrap"))) {
+    fail(path, ": invalid data_type.")
+  }
+  # Failed/missing bootstrap scores do not invalidate a complete permutation run.
+  d <- d[d$data_type %in% c("observed", "permutation"), , drop = FALSE]
+  if (!nrow(d)) fail(path, ": no observed/permutation rows.")
+  d <- constant_text(d, c("sample_id", "metric", extra_fields), path)
+  if (!d$metric[1] %in% metrics_keep) fail(path, ": unexpected metric.")
+  if (anyNA(d$comparison) || any(!nzchar(d$comparison))) fail(path, ": missing comparison.")
+  if (length(comparisons_keep)) d <- d[d$comparison %in% comparisons_keep, , drop = FALSE]
+  if (!nrow(d)) fail(path, ": no requested comparison.")
+  if (!is.numeric(d$H) || any(!is.finite(d$H))) fail(path, ": non-finite H.")
+  if (!is.numeric(d$n_permutation) || any(!is.finite(d$n_permutation)) ||
+      any(d$n_permutation < 1 | d$n_permutation != floor(d$n_permutation))) {
+    fail(path, ": invalid n_permutation.")
+  }
+  d$source_file <- path
+  d$source_md5 <- unname(tools::md5sum(path))
+  d
+}
+
+validate_components <- function(scores, ids, comparisons) {
+  expected <- expand.grid(sample_id = ids, metric = metrics_keep,
+                          comparison = comparisons, stringsAsFactors = FALSE)
+  observed <- scores[scores$data_type == "observed", , drop = FALSE]
+  if (anyDuplicated(key(observed)) || !setequal(key(observed), key(expected)) ||
+      !setequal(key(scores), key(expected))) {
+    fail("Incomplete/duplicated sample-or-pair x metric x comparison grid.")
+  }
+  lapply(split(scores, key(scores)), function(d) {
+    o <- d[d$data_type == "observed", , drop = FALSE]
+    p <- d[d$data_type == "permutation", , drop = FALSE]
+    label <- paste(o$sample_id, o$metric, o$comparison, sep = " / ")
+    B <- unique(d$n_permutation)
+    if (length(B) != 1L || B > .Machine$integer.max || nrow(p) != B) {
+      fail(label, ": incomplete permutation count.")
+    }
+    if (anyNA(p$replicate_id) || any(!grepl("^Permutation-[1-9][0-9]*$", p$replicate_id))) {
+      fail(label, ": invalid permutation IDs.")
+    }
+    p$iteration <- as.integer(sub("^Permutation-", "", p$replicate_id))
+    if (anyNA(p$iteration) || anyDuplicated(p$iteration) ||
+        !setequal(p$iteration, seq_len(B))) fail(label, ": incomplete/duplicate iteration IDs.")
+    p <- p[order(p$iteration), , drop = FALSE]
+    if (!is.numeric(p$seed) || any(!is.finite(p$seed)) || anyDuplicated(p$seed) ||
+        any(p$seed != floor(p$seed)) || any(abs(p$seed) > .Machine$integer.max)) {
+      fail(label, ": invalid/duplicate permutation seeds.")
+    }
+    if (all(c("Early", "Middle", "Late") %in% names(d))) {
+      h <- pmin(d$Middle - d$Early, d$Middle - d$Late)
+      if (any(!is.finite(h)) || any(abs(h - d$H) > 1e-8)) fail(label, ": inconsistent H.")
+    }
+    list(observed = o, permutation = p)
+  })
+}
+component_summary <- function(components) {
+  bind_fill(lapply(components, function(x) {
+    o <- x$observed
+    z <- o[, setdiff(names(o), c("data_type", "replicate_id", "seed")), drop = FALSE]
+    names(z)[names(z) == "H"] <- "H_observed"
+    z$n_null_ge_observed <- sum(x$permutation$H >= o$H)
+    z$p_empirical <- (1 + z$n_null_ge_observed) / (1 + nrow(x$permutation))
+    z
+  }))
+}
+# A check for accidentally restarted schedules, not proof of stream independence.
+check_distinct_schedules <- function(p, labels) {
+  if (length(p) > 1L) for (i in 2:length(p)) for (j in seq_len(i - 1L)) {
+    if (identical(as.numeric(p[[i]]$seed), as.numeric(p[[j]]$seed))) {
+      fail("Identical seed schedules for independent units: ", labels[i], " / ", labels[j])
+    }
+  }
+}
+mean_test <- function(selected) {
+  p <- lapply(selected, function(x) x$permutation)
+  iterations <- p[[1]]$iteration
+  if (!all(vapply(p, function(z) identical(z$iteration, iterations), logical(1)))) {
+    fail("Different permutation ID sets within a joint test; complete the runs first.")
+  }
+  H <- vapply(selected, function(x) x$observed$H, numeric(1))
+  T_null <- rowMeans(do.call(cbind, lapply(p, function(z) z$H)))
+  T_obs <- mean(H)
+  B <- length(T_null)
+  k <- sum(T_null >= T_obs)
+  list(H = H, iterations = iterations, null = T_null, mean_H = T_obs,
+       B = B, k = k, p = (1 + k) / (B + 1))
+}
+# Independent arithmetic route: aggregate the original long table, not H_null.
+audit_mean <- function(d, result) {
+  o <- d[d$data_type == "observed", , drop = FALSE]
+  p <- d[d$data_type == "permutation", , drop = FALSE]
+  coverage <- table(p$replicate_id, p$sample_id)
+  stopifnot(nrow(o) == length(result$H), !anyDuplicated(o$sample_id),
+            setequal(o$sample_id, colnames(coverage)), all(coverage == 1L))
+  reference <- aggregate(H ~ replicate_id, data = p, FUN = mean)
+  reference$iteration <- as.integer(sub("^Permutation-", "", reference$replicate_id))
+  reference <- reference[order(reference$iteration), , drop = FALSE]
+  k <- sum(reference$H >= mean(o$H))
+  delta <- max(abs(reference$H - result$null))
+  stopifnot(identical(reference$iteration, result$iterations),
+            length(reference$H) == result$B, k == result$k,
+            abs(mean(o$H) - result$mean_H) < 1e-12, delta < 1e-12,
+            abs((1 + k) / (1 + nrow(reference)) - result$p) < 1e-12)
+  data.frame(audit_pass = TRUE, null_max_abs_difference = delta,
+             p_recalculated = (1 + k) / (1 + nrow(reference)))
+}
+
+species_pairs_keep <- text_vector(params$species_pairs)
+if (anyNA(species_pairs_keep) || any(!nzchar(species_pairs_keep)) ||
+    anyDuplicated(species_pairs_keep)) fail("Invalid species_pairs.")
+if (!scalar_text(params$condition_1) || !scalar_text(params$condition_2)) fail("Set both conditions.")
+if (!is.numeric(params$permuted_side) || length(params$permuted_side) != 1L ||
+    is.na(params$permuted_side) || !params$permuted_side %in% c(1, 2)) fail("Invalid permuted_side.")
+if (!scalar_text(params$shared_query_mode) ||
+    !params$shared_query_mode %in% c("bonferroni", "error", "synchronized")) {
+  fail("Invalid shared_query_mode.")
+}
+sidecars <- file.path(outdir, c("pair_summary.csv", "joint_null.csv", "audit.csv"))
+if (path_summary %in% c(files, sidecars) || any(sidecars %in% files)) fail("Conflicting output paths.")
+params
+```
+
+## Read and validate the key data
+
+```{r Read key data}
+metadata_fields <- c("sample_id_1", "sample_id_2", "species_1", "species_2",
+                     "individual_id_1", "individual_id_2", "condition_1", "condition_2")
+inputs <- lapply(files, function(path) {
+  d <- read_base(path, metadata_fields)
+  if (d$species_1[1] == d$species_2[1]) fail(path, ": not an inter-species pair.")
+  if (d$condition_1[1] != params$condition_1 || d$condition_2[1] != params$condition_2) {
+    fail(path, ": unexpected condition_1/condition_2.")
+  }
+  d$species_pair <- paste(d$species_1, d$species_2, sep = "__vs__")
+  if (length(species_pairs_keep) && !d$species_pair[1] %in% species_pairs_keep) {
+    fail(path, ": unexpected ordered species_pair.")
+  }
+  side <- as.integer(params$permuted_side)
+  other <- 3L - side
+  d$randomized_sample <- d[[paste0("sample_id_", side)]]
+  d$fixed_sample <- d[[paste0("sample_id_", other)]]
+  d$randomized_individual <- paste(d[[paste0("species_", side)]],
+                                    d[[paste0("individual_id_", side)]], sep = "::")
+  d$fixed_individual <- paste(d[[paste0("species_", other)]],
+                               d[[paste0("individual_id_", other)]], sep = "::")
+  d
+})
+scores <- bind_fill(inputs)
+if (!length(species_pairs_keep)) species_pairs_keep <- unique(scores$species_pair)
+if (!setequal(unique(scores$species_pair), species_pairs_keep)) fail("A requested species_pair is missing.")
+if (!length(comparisons_keep)) comparisons_keep <- sort(unique(scores$comparison))
+manifest_fields <- c("sample_id", metadata_fields, "species_pair", "randomized_sample",
+                     "fixed_sample", "randomized_individual", "fixed_individual")
+manifest <- unique(scores[c("source_file", "metric", manifest_fields)])
+if (anyDuplicated(manifest[c("sample_id", "metric")])) fail("Duplicate pair/metric input files.")
+pair_metadata <- unique(manifest[manifest_fields])
+if (anyDuplicated(pair_metadata$sample_id) ||
+    anyDuplicated(pair_metadata[c("sample_id_1", "sample_id_2")])) {
+  fail("Inconsistent pair metadata or multiple IDs for the same ordered sample pair.")
+}
+# A sample must keep its biological-individual/species identity across all pairings.
+all_samples <- unique(rbind(
+  data.frame(sample = pair_metadata$sample_id_1, species = pair_metadata$species_1,
+             individual = pair_metadata$individual_id_1),
+  data.frame(sample = pair_metadata$sample_id_2, species = pair_metadata$species_2,
+             individual = pair_metadata$individual_id_2)
+))
+if (anyDuplicated(all_samples$sample)) fail("Inconsistent biological metadata for a reused sample.")
+components <- validate_components(scores, pair_metadata$sample_id, comparisons_keep)
+pair_summary <- component_summary(components)
+pair_summary$analysis_id <- params$analysis_id
+pair_metadata[c("sample_id_1", "sample_id_2", "species_pair",
+                "randomized_individual", "fixed_individual")]
+```
+
+## Group tests with dependence checks
+
+The mean-H statistic gives each input pair equal weight. It is not an average
+across independent plants when pairs reuse plants. Independent source samples,
+valid within-pair randomizations, and unchanged observed/permutation feature
+selection remain assumptions. Bootstrap rows are never used as null draws.
+
+```{r Group tests}
+tests <- expand.grid(species_pair = species_pairs_keep, metric = metrics_keep,
+                     comparison = comparisons_keep, stringsAsFactors = FALSE)
+results <- lapply(seq_len(nrow(tests)), function(i) {
+  test <- tests[i, , drop = FALSE]
+  pm <- pair_metadata[pair_metadata$species_pair == test$species_pair, , drop = FALSE]
+  ids <- pm$sample_id
+  selected <- components[key(data.frame(sample_id = ids, metric = test$metric,
+                                        comparison = test$comparison))]
+  p <- lapply(selected, function(x) x$permutation)
+  H <- vapply(selected, function(x) x$observed$H, numeric(1))
+  pair_p <- vapply(selected, function(x) {
+    (1 + sum(x$permutation$H >= x$observed$H)) / (1 + nrow(x$permutation))
+  }, numeric(1))
+  # Avoid averaging scores based on different stage definitions or bin counts.
+  for (nm in intersect(c("n_bins", "middle_cell_types", "middle_fraction", "focal_species"), names(scores))) {
+    values <- unlist(lapply(selected, function(x) x$observed[[nm]]), use.names = FALSE)
+    if (anyNA(values) || length(unique(values)) != 1L) fail(test$species_pair, ": mixed ", nm, ".")
+  }
+  reused_query <- anyDuplicated(pm$randomized_individual) > 0L
+  fallback <- reused_query && params$shared_query_mode == "bonferroni"
+  if (reused_query && params$shared_query_mode == "error") {
+    fail(test$species_pair, ": randomized individuals are reused across pairs.")
+  }
+  meta <- data.frame(analysis_id = params$analysis_id, test,
+                     species_1 = pm$species_1[1], species_2 = pm$species_2[1],
+                     condition_1 = params$condition_1, condition_2 = params$condition_2,
+                     permuted_side = params$permuted_side)
+  summary <- cbind(meta, data.frame(
+    n_pairs = length(ids), pairs = paste(ids, collapse = ";"),
+    n_individuals_1 = length(unique(pm$individual_id_1)),
+    n_individuals_2 = length(unique(pm$individual_id_2)),
+    n_randomized_individuals = length(unique(pm$randomized_individual)),
+    n_fixed_individuals = length(unique(pm$fixed_individual)),
+    reused_randomized_individual = reused_query,
+    mean_H = mean(H), median_H = median(H), min_H = min(H), max_H = max(H),
+    n_positive_H = sum(H > 0), fraction_positive_H = mean(H > 0)
+  ))
+  d <- scores[scores$species_pair == test$species_pair & scores$metric == test$metric &
+                scores$comparison == test$comparison, , drop = FALSE]
+  # Empty but typed output is intentional when no mean-H joint null is valid.
+  null <- cbind(meta[FALSE, , drop = FALSE],
+                data.frame(iteration = integer(), mean_H_null = numeric()))
+  if (fallback) {
+    summary$p_method <- "bonferroni_min_pair_p"
+    summary$test_scope <- "global_pair_null_not_mean_H"
+    summary$p_group <- min(1, length(pair_p) * min(pair_p))
+    summary$p_joint <- NA_real_
+    summary$n_joint_permutation <- NA_integer_
+    summary$n_null_ge_observed <- NA_integer_
+    summary$p_resolution <- NA_real_
+    summary$at_minimum_resolution <- NA
+    summary$null_mean_H <- summary$null_sd_H <- NA_real_
+    summary$null_min_H <- summary$null_max_H <- NA_real_
+    summary$observed_minus_null_mean <- NA_real_
+    best <- which.min(pair_p)
+    summary$best_pair <- ids[best]
+    summary$best_pair_p <- pair_p[best]
+    summary$best_pair_H <- H[best]
+    # Recompute every component P directly from the long table for the audit.
+    parts <- split(d, d$sample_id)
+    check_p <- vapply(parts, function(z) {
+      obs <- z$H[z$data_type == "observed"]
+      nul <- z$H[z$data_type == "permutation"]
+      stopifnot(length(obs) == 1L)
+      (1 + sum(nul >= obs)) / (1 + length(nul))
+    }, numeric(1))
+    p_check <- min(1, length(parts) * min(check_p))
+    stopifnot(abs(mean(d$H[d$data_type == "observed"]) - summary$mean_H) < 1e-12,
+              abs(p_check - summary$p_group) < 1e-12)
+    audit <- cbind(meta, data.frame(audit_pass = TRUE, null_max_abs_difference = NA_real_,
+                                   p_recalculated = p_check))
+  } else {
+    # Same randomized individual: identical shuffle across its reference pairings.
+    query_groups <- split(seq_along(ids), pm$randomized_individual)
+    if (reused_query) for (indices in query_groups) {
+      if (length(unique(pm$randomized_sample[indices])) != 1L) {
+        fail("Cannot synchronize different preparations from the same biological individual.")
+      }
+      first <- indices[1]
+      for (j in indices) if (!identical(as.numeric(p[[j]]$seed), as.numeric(p[[first]]$seed))) {
+        fail("Reused randomized sample has different schedules: ", pm$randomized_sample[first],
+             ". Regenerate synchronized shuffles, or use shared_query_mode = bonferroni.")
+      }
+    }
+    representatives <- vapply(query_groups, function(x) x[1], integer(1))
+    check_distinct_schedules(p[representatives], pm$randomized_sample[representatives])
+    r <- mean_test(selected)
+    summary$p_method <- if (length(ids) == 1L) "single_pair_permutation" else if (reused_query) {
+      "synchronized_query_mean_permutation"
+    } else "independent_query_mean_permutation"
+    summary$test_scope <- if (length(ids) == 1L) "single_pair" else "conditional_joint_pairs"
+    summary$p_group <- summary$p_joint <- r$p
+    summary$n_joint_permutation <- r$B
+    summary$n_null_ge_observed <- r$k
+    summary$p_resolution <- 1 / (r$B + 1)
+    summary$at_minimum_resolution <- r$k == 0L
+    summary$null_mean_H <- mean(r$null)
+    summary$null_sd_H <- sd(r$null)
+    summary$null_min_H <- min(r$null)
+    summary$null_max_H <- max(r$null)
+    summary$observed_minus_null_mean <- r$mean_H - mean(r$null)
+    summary$best_pair <- ids[which.min(pair_p)]
+    summary$best_pair_p <- min(pair_p)
+    summary$best_pair_H <- H[which.min(pair_p)]
+    null <- cbind(meta[rep(1L, r$B), , drop = FALSE],
+                  data.frame(iteration = r$iterations, mean_H_null = r$null))
+    audit <- cbind(meta, audit_mean(d, r))
+  }
+  list(summary = summary, null = null, audit = audit)
+})
+summary_results <- bind_fill(lapply(results, function(x) x$summary))
+joint_null <- bind_fill(lapply(results, function(x) x$null))
+audit <- bind_fill(lapply(results, function(x) x$audit))
+```
+
+## Multiple-testing correction and export
+
+Correct `p_group` once across **all ordered species-pair × metric × comparison**
+rows in this render. For three ordered species pairs, three metrics and one
+comparison, there are nine tests; with two comparisons, eighteen. The within-group
+Bonferroni combination, where needed, and the across-group Holm correction address
+different hypothesis levels. Do not include already adjusted pair P values.
+
+```{r Adjust and save}
+summary_results$p_adjusted <- p.adjust(summary_results$p_group, method = params$adjust_method)
+summary_results$adjust_method <- params$adjust_method
+summary_results$n_tests_in_family <- nrow(summary_results)
+summary_results$alpha <- params$alpha
+summary_results$reject_group_null <- summary_results$p_adjusted <= params$alpha
+summary_results$hourglass_supported <- summary_results$reject_group_null & summary_results$mean_H > 0 &
+  (summary_results$p_method != "bonferroni_min_pair_p" | summary_results$best_pair_H > 0)
+audit$p_adjusted_recalculated <- p.adjust(audit$p_recalculated, method = params$adjust_method)
+stopifnot(all(abs(audit$p_adjusted_recalculated - summary_results$p_adjusted) < 1e-12))
+write.csv(summary_results, path_summary, row.names = FALSE, na = "NA")
+write.csv(pair_summary, sidecars[1], row.names = FALSE, na = "NA")
+write.csv(joint_null, sidecars[2], row.names = FALSE, na = "NA")
+write.csv(audit, sidecars[3], row.names = FALSE, na = "NA")
+summary_results[c("species_pair", "metric", "comparison", "n_pairs", "n_individuals_1",
+                  "n_individuals_2", "mean_H", "p_method", "n_joint_permutation",
+                  "n_null_ge_observed", "p_resolution", "p_joint", "p_group",
+                  "p_adjusted", "hourglass_supported")]
+```
+
+`hourglass_supported` is an operational flag, not evidence of universal effects.
+For the fallback it additionally requires positive H in the pair supplying the
+minimum P. Always report `p_method`: **a Bonferroni global-pair test is not a
+mean-H permutation test**. A single randomized Lch preparation compared with
+several Egr references remains one randomized Lch preparation.
+
+The summary does not estimate population-average effects. Stage definitions,
+actual shuffle synchronization, pair-specific gene selection, and biological
+replicate independence must be checked in the upstream analyses.
+
+## Pair-level diagnostics and audit
+
+```{r Pair summary}
+pair_summary[c("sample_id_1", "sample_id_2", "metric", "comparison", "H_observed",
+               "n_permutation", "n_null_ge_observed", "p_empirical")]
+```
+
+```{r Numerical audit}
+audit
+```
+
+The audit independently reconstructs null means and P values, or reconstructs
+the Bonferroni combination directly from the component rows. Zero exceedances
+are shown as the resolution floor `1 / (B + 1)`. No new permutations are generated.
+
+## Session information
+
+```{r Session information}
+sessionInfo()
+```
