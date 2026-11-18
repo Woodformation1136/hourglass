@@ -411,8 +411,8 @@ align_similarity_matrix <- function(
     step.pattern = dtw::asymmetric, # Each ray bin is matched exactly once.
     window.type = "slantedband",
     window.size = window_size,
-    open.begin = FALSE,
-    open.end = TRUE,
+    open.begin = open.begin,
+    open.end = open.end,
     keep.internals = TRUE,
     distance.only = FALSE
   )
