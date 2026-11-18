@@ -1,0 +1,457 @@
+---
+title: "Candidate protoplast-associated genes"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: readable
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    number_sections: true
+    code_folding: hide
+    df_print: paged
+params:
+  inputs:
+    value:
+      - dataset: sc_xylem
+        modality: sc
+        rds: test/Hourglass/Consensus_cell_labelling_ptr/merged_obj.rds
+      - dataset: sn_stem1
+        modality: sn
+        rds: rawdata/PMID41013691/populus_scRNAseq_drought_whole_dataset.rds
+      - dataset: sn_stem2
+        modality: sn
+        rds: rawdata/PMID40877938/SCC_AfterClustering45PC0.5res.rds
+      - dataset: st_stem
+        modality: st
+        rds: rawdata/Qi_spatial/stall_fin_cnameChecked.Rdata
+  path_diamond_output: rawdata/PMID41013691/run-diamond/matches.tsv
+  path_annot_info: references/Ptr/annotation/Ptrichocarpa_533_v4.1.annotation_info.txt
+  outdir: test/protoplast_sensitive
+  
+
+---
+
+# Setup
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = TRUE, collapse = TRUE, comment = "#>")
+library(Seurat)
+library(DESeq2)
+library(dplyr)
+```
+
+Params
+
+```{r Params}
+params
+```
+
+# Match P. trichocarpa vs P. tremula gene ID
+
+```{r}
+ptr_matches <- read.table(params$path_diamond_output)
+colnames(ptr_matches) <- c(
+    "Query_accession",
+    "Target_accession",
+    "Sequence_identity",
+    "Length",
+    "Mismatches",
+    "Gap_openings",
+    "Query_start",
+    "Query_end",
+    "Target_start",
+    "Target_end",
+    "E_value",
+    "Bit_score"
+)
+dim(ptr_matches); head(ptr_matches)
+```
+
+Filter match results
+
+```{r}
+ptr_best_matches <- ptr_matches %>% 
+  arrange(Query_accession, desc(Sequence_identity)) %>%
+  distinct(Query_accession, .keep_all = TRUE)
+dim(ptr_best_matches)
+
+# 
+ptr_rbest_matches <- ptr_best_matches %>% 
+  arrange(Target_accession, desc(Sequence_identity)) %>%
+  distinct(Target_accession, .keep_all = TRUE)
+dim(ptr_rbest_matches)
+
+# show result
+head(ptr_rbest_matches)
+```
+
+Show the distribution of sequence similarity
+
+```{r}
+ptr_rbest_matches %>% 
+    ggplot(aes(x = Sequence_identity)) + 
+    geom_histogram(binwidth=.5) +
+    theme_classic() + 
+    labs(title = "
+Sequence similarity
+of P. trichocarpa & P. tremula reciprocal best-hits
+    ")
+```
+
+```{r}
+ptr_rbest_matches_90 <- subset(ptr_rbest_matches, ptr_rbest_matches$Sequence_identity > 90)
+ptr_rbest_matches_90$Target_accession %<>% sapply(function(x){sub("[0-9]*[.]p", "v4.1", x)})
+ptr_rbest_matches_90$Query_accession %<>% sapply(function(x){sub("[.][0-9]*[.]p", "", x)})
+tremula_2_trichocarpa <- as.vector(ptr_rbest_matches_90$Target_accession)
+names(tremula_2_trichocarpa) <- ptr_rbest_matches_90$Query_accession
+head(ptr_rbest_matches_90)
+```
+
+# Pseudobulk expression
+
+Sum **raw RNA counts**, never integrated, scaled or log-normalized expression.
+Each column represents one biological sample in one matched state.
+
+```{r pseudobulk}
+# sc data
+seurat_obj_sc <- readRDS(params$inputs[[1]]$rds)
+seurat_obj_sc <- subset(
+  seurat_obj_sc, 
+  cells = seurat_obj_sc@meta.data %>% 
+    filter(
+      !is.na(cell_label),
+      !cell_label %in%  c("Outlier1", "Outlier2")
+    ) %>% row.names
+)
+table(seurat_obj_sc$orig.ident, seurat_obj_sc$cell_label)
+pb_sc <- AggregateExpression(
+  seurat_obj_sc,
+  group.by = c("orig.ident", "cell_label"),
+  features = ptr_rbest_matches_90$Target_accession,
+  assays = "RNA"
+)$RNA
+
+# sn data 1
+seurat_obj_sn <- readRDS(params$inputs[[2]]$rds)
+DimPlot(seurat_obj_sn, label = TRUE)
+seurat_obj_sn$batch_suffix <- Cells(seurat_obj_sn) %>% sapply(function(x){strsplit(x, "_")[[1]][4]})
+table(seurat_obj_sn$batch_suffix, seurat_obj_sn$treat)
+seurat_obj_sn <- subset(seurat_obj_sn, treat == "Control") # exclude drought treatment cells
+seurat_obj_sn <- subset(seurat_obj_sn, seurat_clusters %in% c(0, 3, 7, 13)) # (6, 19, 22 = mature xylem)
+table(seurat_obj_sn$batch_suffix, seurat_obj_sn$seurat_clusters)
+pb_sn <- AggregateExpression(
+  seurat_obj_sn, 
+  group.by = c("batch_suffix", "seurat_clusters"),
+  features = ptr_rbest_matches_90$Query_accession,
+  assays = "RNA"
+)$RNA
+rownames(pb_sn) <- tremula_2_trichocarpa[rownames(pb_sn)]
+
+# sn data 2
+seurat_obj_sn2 <- readRDS(params$inputs[[3]]$rds)
+DimPlot(seurat_obj_sn2, label = TRUE)
+seurat_obj_sn2$batch_suffix <- sapply(Cells(seurat_obj_sn2), function(x){strsplit(x, "_")[[1]][2]})
+seurat_obj_sn2 <- subset(seurat_obj_sn2, seurat_clusters %in% c(8, 9, 14, 16, 19, 21, 23, 32))
+seurat_obj_sn2 <- subset(seurat_obj_sn2, treat == "Nuclei")
+table(seurat_obj_sn2$batch_suffix, seurat_obj_sn2$treat)
+pb_sn2 <- AggregateExpression(
+  seurat_obj_sn2,
+  group.by = c("batch_suffix", "seurat_clusters"),
+  features = ptr_rbest_matches_90$Query_accession,
+  assays = "RNA"
+)$RNA
+rownames(pb_sn2) <- tremula_2_trichocarpa[rownames(pb_sn2)]
+
+# st data
+input_env <- new.env(parent = emptyenv())
+load(params$inputs[[4]]$rds, envir = input_env)
+seurat_obj_st <- input_env$stall_fin
+rm(input_env)
+pb_st <- AggregateExpression(
+  subset(seurat_obj_st, celltype2 %in% c("XRP_2", "XRP_3", "XRP_1", "RIC_2", "XMC", "XPC", "RIC_1", "FIC")),
+  group.by = c("orig.ident", "celltype2"),
+  features = ptr_rbest_matches_90$Target_accession,
+  assays = "RNA"
+)$RNA
+```
+
+```{r}
+features_all <- row.names(pb_sc) %>%
+  intersect(row.names(pb_sn)) %>% 
+  intersect(row.names(pb_sn2)) %>%
+  intersect(row.names(pb_st))
+
+source("notebooks/scripts/hourglass_analysis.R")
+sim <- calculate_similarity(
+  pb_sc[features_all, ], pb_sn[features_all,], "Jensen-Shannon"
+)
+pheatmap(sim)
+
+sim <- calculate_similarity(
+  pb_sc[features_all, ], pb_sn2[features_all,], "Jensen-Shannon"
+)
+pheatmap(sim)
+
+sim <- calculate_similarity(
+  pb_sc[features_all, ], pb_st[features_all,], "Jensen-Shannon"
+)
+pheatmap(sim)
+```
+
+Aggregate pseudobulk matrices
+
+```{r}
+pb_sc <- AggregateExpression(
+  seurat_obj_sc,
+  group.by = c("orig.ident"),
+  features = ptr_rbest_matches_90$Target_accession,
+  assays = "RNA"
+)$RNA
+
+# sn data 1
+pb_sn <- AggregateExpression(
+  seurat_obj_sn, 
+  group.by = c("batch_suffix"),
+  features = ptr_rbest_matches_90$Query_accession,
+  assays = "RNA"
+)$RNA
+colnames(pb_sn) <- paste("PMID41013691_", colnames(pb_sn))
+rownames(pb_sn) <- tremula_2_trichocarpa[rownames(pb_sn)]
+
+# sn data 2
+pb_sn2 <- AggregateExpression(
+  seurat_obj_sn2,
+  group.by = c("batch_suffix"),
+  features = ptr_rbest_matches_90$Query_accession,
+  assays = "RNA"
+)$RNA
+colnames(pb_sn2) <- paste("PMID40877938_", colnames(pb_sn2))
+rownames(pb_sn2) <- tremula_2_trichocarpa[rownames(pb_sn2)]
+
+# st data
+pb_st <- AggregateExpression(
+  subset(seurat_obj_st, celltype2 %in% c("XRP_2", "XRP_3", "XRP_1", "RIC_2", "XMC", "XPC", "RIC_1", "FIC")),
+  group.by = c("orig.ident"),
+  features = ptr_rbest_matches_90$Target_accession,
+  assays = "RNA"
+)$RNA
+```
+
+Aggregate counts
+
+```{r}
+features_all <- row.names(pb_sc) %>%
+  intersect(row.names(pb_sn)) %>% 
+  intersect(row.names(pb_sn2)) %>%
+  intersect(row.names(pb_st))
+
+pb_all <- pb_sc[features_all, ] %>%
+  cbind(pb_st[features_all, ]) %>%
+  cbind(pb_sn[features_all, ]) %>%
+  cbind(pb_sn2[features_all, ])
+```
+
+Create metadata
+
+```{r}
+coldata <- data.frame(
+  technology = c(
+    rep("sc", ncol(pb_sc)),
+    rep("sp", ncol(pb_st)),
+    rep("sn", ncol(pb_sn)),
+    rep("sn", ncol(pb_sn2))
+  )
+) %>% mutate(
+  protoplasting = case_match(
+    technology,
+    "sc" ~ "protoplasting",
+    "sn" ~ "no_protoplasting",
+    "sp" ~ "no_protoplasting"
+  ),
+  cell_level = case_match(
+    technology,
+    "sc" ~ "cell",
+    "sn" ~ "cell",
+    "sp" ~ "pseudocell"
+  )
+)
+row.names(coldata) <- c(
+  colnames(pb_sc),
+  colnames(pb_st),
+  colnames(pb_sn),
+  colnames(pb_sn2)
+)
+coldata
+```
+
+# Differential expression
+
+```{r differential-expression}
+dds <- DESeqDataSetFromMatrix(
+  countData = pb_all[, coldata %>% subset(technology != "sp") %>% rownames],
+  colData = coldata %>% subset(technology != "sp"),
+  design = ~ protoplasting
+)
+dds$protoplasting <- relevel(dds$protoplasting, ref = "no_protoplasting")
+
+dds2 <- DESeqDataSetFromMatrix(
+  countData = pb_all[, coldata %>% subset(technology != "sn") %>% rownames],
+  colData = coldata %>% subset(technology != "sn"),
+  design = ~ protoplasting
+)
+dds2$protoplasting <- relevel(dds2$protoplasting, ref = "no_protoplasting")
+```
+
+
+```{r differential-expression}
+dds <- DESeq(dds)
+dds2 <- DESeq(dds2)
+res <- results(dds)
+res2 <- results(dds2)
+res; res2
+```
+
+```{r}
+data_plot <- as.data.frame(res)
+data_plot %<>% mutate(
+  group = ifelse(
+    padj > 0.05, "not-sig", ifelse(
+      log2FoldChange > 1.5, "up-reg", ifelse(
+        log2FoldChange < -1.5, "down-reg", "sig-not"
+      )
+    )
+  )
+)
+p_vol_scsn <- ggplot(
+  data_plot,
+  aes(x = log2FoldChange, y = -log10(padj), color = group)
+) +
+  geom_point() +
+  scale_color_manual(
+    values = c("up-reg" = "salmon", "down-reg" = "lightgreen", "not-sig" = "grey40", "sig-not" = "grey40")
+  ) +
+  theme_bw() +
+  labs(
+    title = "sc vs sn"
+  )
+p_vol_scsn
+```
+
+
+```{r}
+data_plot <- as.data.frame(res2)
+data_plot %<>% mutate(
+  group = ifelse(
+    padj > 0.05, "not-sig", ifelse(
+      log2FoldChange > 1.5, "up-reg", ifelse(
+        log2FoldChange < -1.5, "down-reg", "sig-not"
+      )
+    )
+  )
+)
+p_vol_scsp <- ggplot(
+  data_plot,
+  aes(x = log2FoldChange, y = -log10(padj), color = group)
+) +
+  geom_point() +
+  scale_color_manual(
+    values = c("up-reg" = "salmon", "down-reg" = "lightgreen", "not-sig" = "grey40", "sig-not" = "grey40")
+  ) +
+  theme_bw()
+  labs(
+    title = "sc vs sp"
+  )
+  
+p_vol_scsp
+```
+
+```{r}
+deg_scsn <- as.data.frame(res) %>%
+  filter(
+    log2FoldChange > 1.5,
+    padj < 0.05
+  ) %>%
+  arrange(
+    padj
+  )
+deg_scsp <- as.data.frame(res2) %>%
+  filter(
+    log2FoldChange > 1.5,
+    padj < 0.05
+  ) %>%
+  arrange(
+    padj
+  )
+
+head(deg_scsn); head(deg_scsp)
+```
+
+
+```{r}
+if (!require("VennDiagram", character.only = TRUE)) {
+  install.packages("VennDiagram")
+  library(VennDiagram, character.only = TRUE)
+}
+
+library(RColorBrewer)
+myCol <- brewer.pal(2, "Pastel2")[1:2]
+
+# Chart
+venn.diagram(
+  x = list(rownames(deg_scsn), rownames(deg_scsp)),
+  category.names = c("SC vs SN" , "SC vs SP"),
+  filename = file.path(params$outdir, 'Protoplasting_induced.png'),
+  output=TRUE,
+  
+  # Output features
+  imagetype="png" ,
+  height = 480 , 
+  width = 520 , 
+  resolution = 300,
+  compression = "lzw",
+  
+  # Circles
+  lwd = 2,
+  lty = "blank",
+  fill = myCol,
+  
+  # Numbers
+  cex = .6,
+  fontface = "bold",
+  fontfamily = "sans",
+  
+  # Set names
+  cat.cex = 0.6,
+  cat.fontface = "bold",
+  cat.default.pos = "outer",
+  cat.pos = c(-27, 27),
+  cat.dist = c(0.055, 0.055),
+  cat.fontfamily = "sans",
+  
+  rotation.degree = 0
+)
+```
+
+
+```{r, echo=FALSE}
+res_all <- full_join(
+  as.data.frame(res) %>% mutate(gene = res@rownames), 
+  as.data.frame(res2) %>% mutate(gene = res@rownames),
+  by = "gene",
+  suffix = c(".sn", ".sp")
+)
+
+# append Arabidopsis best-hit
+annot_info <- read.csv(params$path_annot_info, sep = "\t")
+arab_best_hit <- annot_info$best_arabi_gene
+arab_defline <- annot_info$best_arabi_defline
+names(arab_best_hit) <- annot_info$locusName %>% paste0(".v4.1")
+names(arab_defline) <- annot_info$locusName %>% paste0(".v4.1")
+res_all$arab_best_hit <- arab_best_hit[res_all$gene]
+res_all$arab_defline <- arab_defline[res_all$gene]
+
+# write data
+dir.create(params$outdir)
+write.csv(res_all, file.path(params$outdir, "dea_all.csv"))
+```
