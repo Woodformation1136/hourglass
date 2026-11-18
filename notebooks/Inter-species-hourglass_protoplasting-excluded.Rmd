@@ -19,6 +19,7 @@ params:
   keep_only_transfer_pass: TRUE
   n_bins: 10
   n_permutation: 500
+  permutation_seed: 42             # Shared salt; sample ID determines each side's schedule.
   n_bootstrap: 100
   n_parallel: 10
   window_dtw: 0.5
@@ -471,9 +472,9 @@ p_similarity_discrete <- pheatmap(
 
 6.  Permutation for the null distribution of the hourglass score\
 
-    (1) Shuffle pseudotime values\
-    (2) Repeat Step 2-5\
-    (3) Estimate permutation p-value
+    (1) Independently shuffle pseudobulk-bin order in both samples; reuse each sample's mapping across its pairs\
+    (2) Recalculate similarities on the fixed observed DTW path and stage modules\
+    (3) Estimate the one-sided permutation P value
 
 7.  Bootstrapping for the confidence interval of the hourglass score\
 
@@ -893,31 +894,91 @@ scores_observed
 
 ### 6. Permutation test
 
-```{r Permutation test, echo=TRUE, results='hide'}
-# One shared random ordering, restricted to the eligible cells of each branch.
-# permute_pseudotime <- function(
-#     pseudotime, 
-#     branch_id, 
-#     cell_labels,
-#     seed
-# ) {
-#   set.seed(seed)
-#   priority <- sample.int(nrow(pseudotime))
-#   out <- pseudotime
-#   for (j in seq_along(lineage_cell_types)) {
-#     keep <- grepl(paste0("(^|,)", j, "(,|$)"), branch_id) &
-#       cell_labels %in% lineage_cell_types[[j]] & is.finite(pseudotime[, j])
-#     out[keep, j] <- sort(pseudotime[keep, j])[rank(priority[keep], ties.method = "first")]
-#   }
-#   out
-# }
+**Both samples are randomized.** The active null shuffles the columns of each
+already aggregated pseudobulk matrix, restores their target-bin labels, and
+recalculates similarity along the **fixed observed DTW path**. It does not
+shuffle individual cells or re-fit DTW. This preserves the original active
+procedure; its calibration and exchangeability assumptions are separate from
+synchronizing the transformations across reused samples.
+
+Each sample receives a seed schedule based only on its sample ID and
+`permutation_seed`, independent of its partner, metric, or side in the pair.
+A SHA-256 fingerprint records the native-gene pseudobulk input, and a second
+fingerprint records the actual source-bin to target-bin assignment. The summary
+checks these on **both sides** before constructing a synchronized mean-H null.
+Pair-specific orthogroup subsets are deliberately not part of the input hash.
+
+```{r Permutation setup}
 n_permutation <- as.integer(params$n_permutation)
 metric <- as.character(params$metric)
+stopifnot(length(n_permutation) == 1L, !is.na(n_permutation), n_permutation > 0L)
+if (!requireNamespace("digest", quietly = TRUE)) stop("Install the digest package.")
+if (!is.numeric(params$permutation_seed) || length(params$permutation_seed) != 1L ||
+    !is.finite(params$permutation_seed) ||
+    params$permutation_seed != floor(params$permutation_seed) ||
+    abs(params$permutation_seed) > .Machine$integer.max) {
+  stop("permutation_seed must be one finite R integer.")
+}
 
-set.seed(seed_from_id(params$sample_id_2))
-permutation_seeds <- sample.int(.Machine$integer.max, n_permutation, replace = FALSE)
+permutation_scheme <- "both_bin_order_fixed_path_v1"
+permutation_rng <- "Mersenne-Twister/Inversion/Rejection"
+set_permutation_seed <- function(seed) {
+  set.seed(seed, kind = "Mersenne-Twister", normal.kind = "Inversion",
+           sample.kind = "Rejection")
+}
+make_sample_schedule <- function(sample_id, n, salt) {
+  key <- paste("hourglass-bin-permutation-v1", as.integer(salt),
+               enc2utf8(as.character(sample_id)), sep = "::")
+  master <- digest::digest2int(key, seed = 0L)
+  if (is.na(master)) stop("Could not derive the sample seed: ", sample_id)
+  set_permutation_seed(master)
+  list(master = master, seeds = sample.int(.Machine$integer.max, n, replace = FALSE))
+}
+# Hash the full native-gene pseudobulk, not a partner-dependent orthogroup subset.
+hash_bin_input <- function(pb, sample_id) {
+  m <- as.matrix(pb)
+  if (!is.numeric(m) || any(!is.finite(m)) || ncol(m) < 2L ||
+      is.null(rownames(m)) || is.null(colnames(m)) ||
+      anyNA(rownames(m)) || anyNA(colnames(m)) ||
+      anyDuplicated(rownames(m)) || anyDuplicated(colnames(m)) ||
+      any(!nzchar(rownames(m))) || any(!nzchar(colnames(m))) ||
+      any(grepl("|", colnames(m), fixed = TRUE))) {
+    stop("Invalid pseudobulk identifiers or values for ", sample_id)
+  }
+  m <- m[order(rownames(m), method = "radix"), , drop = FALSE]
+  storage.mode(m) <- "double"
+  digest::digest(list(version = "native_gene_bins_v1",
+                      sample_id = enc2utf8(as.character(sample_id)),
+                      genes = enc2utf8(rownames(m)), bins = enc2utf8(colnames(m)),
+                      counts = unname(m)), algo = "sha256", serializeVersion = 2)
+}
+hash_bin_shuffle <- function(sample_id, input_hash, bins, order) {
+  digest::digest(list(version = "both_bin_order_fixed_path_v1",
+                      sample_id = enc2utf8(as.character(sample_id)),
+                      input_hash = as.character(input_hash),
+                      target_bins = enc2utf8(as.character(bins)),
+                      source_bins = enc2utf8(as.character(bins[order]))),
+                 algo = "sha256", serializeVersion = 2)
+}
+
+schedule_1 <- make_sample_schedule(params$sample_id_1, n_permutation, params$permutation_seed)
+schedule_2 <- make_sample_schedule(params$sample_id_2, n_permutation, params$permutation_seed)
+if (schedule_1$master == schedule_2$master || identical(schedule_1$seeds, schedule_2$seeds)) {
+  stop("The two distinct samples have identical seed schedules; change permutation_seed.")
+}
+permutation_seeds_1 <- schedule_1$seeds
+permutation_seeds_2 <- schedule_2$seeds
+bin_labels_1 <- colnames(pb_L1_1)
+bin_labels_2 <- colnames(pb_L1_2)
+stopifnot(identical(bin_labels_1, colnames(res_L1_1$Pseudobulk)),
+          identical(bin_labels_2, colnames(res_L1_2$Pseudobulk)))
+bin_input_hash_1 <- hash_bin_input(res_L1_1$Pseudobulk, params$sample_id_1)
+bin_input_hash_2 <- hash_bin_input(res_L1_2$Pseudobulk, params$sample_id_2)
+```
+
+```{r Permutation test, echo=TRUE, results='hide'}
 n_workers_perm <- get_n_workers(n_permutation, params$n_parallel)
-message("Running ", n_permutation, " permutations on ", n_workers_perm, " workers.")
+message("Running ", n_permutation, " both-sample bin permutations on ", n_workers_perm, " workers.")
 cl_perm <- parallel::makeCluster(n_workers_perm)
 registerDoSNOW(cl_perm)
 perm_progress <- make_parallel_progress(n_permutation)
@@ -928,94 +989,36 @@ scores_perm_list <- tryCatch(
       i = seq_len(n_permutation),
       .inorder = FALSE,
       .options.snow = perm_progress$snow_options,
-      .packages = c("Seurat", "Matrix", "magrittr", "dtw", "sccore", "tibble")
+      .packages = c("Seurat", "Matrix", "magrittr", "dtw", "sccore", "tibble", "digest")
     ) %dopar% {
       source("notebooks/scripts/hourglass_analysis.R")
-      #
-      set.seed(permutation_seeds[i])
-      sample_seeds <- sample.int(.Machine$integer.max, 2L)
-      
-      # # shuffle query pseudotime
-      # pt_i_1 <- permute_pseudotime(
-      #   pseudotime_1, 
-      #   branch_id_1, 
-      #   seurat_obj_1$cell_label,
-      #   seed = sample_seeds[1]
-      # )
-      # pt_i_2 <- permute_pseudotime(
-      #   pseudotime_2, 
-      #   branch_id_2, 
-      #   seurat_obj_1$cell_label,
-      #   seed = sample_seeds[2]
-      # )
-      # 
-      # # aggregate query pseudobulk
-      # binned_1 <- bin_expression(
-      #   seurat_obj_1, 
-      #   pt_i_1, 
-      #   branch_id_1,
-      #   lineage = 1, 
-      #   n_bins = n_bins,
-      #   prefix = paste0(species_1, "-Fiber")
-      # )
-      # binned_2 <- bin_expression(
-      #   seurat_obj_2, 
-      #   pt_i_2, 
-      #   branch_id_2,
-      #   lineage = 1, 
-      #   n_bins = n_bins,
-      #   prefix = paste0(species_2, "-Fiber")
-      # )
-      # query_pb <- orthogroup_expression(
-      #   binned_1$Pseudobulk, 
-      #   orth_expression, 
-      #   species_1
-      # )
-      # reference_pb <- orthogroup_expression(
-      #   binned_2$Pseudobulk, 
-      #   orth_expression, 
-      #   species_2
-      # )
-      set.seed(sample_seeds[1])
-      query_pb <- pb_L1_1[, sample(colnames(pb_L1_1), replace = FALSE)]
-      set.seed(sample_seeds[2])
-      reference_pb <- pb_L1_2[, sample(colnames(pb_L1_2), replace = FALSE)]
-      colnames(query_pb) <- colnames(pb_L1_1)
-      colnames(reference_pb) <- colnames(pb_L1_2)
-      
-      # # call reference pseudobulk
-      # reference_pb <- pb_L1_2
-      # 
-      # calculate similarity
-      similarity_perm <- calculate_similarity(
-        reference_pb, 
-        query_pb, 
-        metric
-      )
-      # aligned <- align_similarity_matrix(
-      #   t(similarity), 
-      #   ceiling(params$window_dtw * max(dim(similarity))), 
-      #   open.begin = params$open.begin,
-      #   open.end = params$open.end
-      # )
+      # Reset immediately before EACH draw: neither side depends on its partner.
+      set_permutation_seed(permutation_seeds_1[i])
+      order_1 <- sample.int(ncol(pb_L1_1), replace = FALSE)
+      set_permutation_seed(permutation_seeds_2[i])
+      order_2 <- sample.int(ncol(pb_L1_2), replace = FALSE)
+      query_pb <- pb_L1_1[, order_1, drop = FALSE]
+      reference_pb <- pb_L1_2[, order_2, drop = FALSE]
+      colnames(query_pb) <- bin_labels_1
+      colnames(reference_pb) <- bin_labels_2
+
+      similarity_perm <- calculate_similarity(reference_pb, query_pb, metric)
+      # Preserve the supplied notebook's fixed observed DTW path and modules.
       aligned <- aligned_L1
-      aligned$path %<>% 
-        mutate(
-          similarity = t(similarity_perm)[L1_bin, L2_bin]
-        )
+      aligned$path %<>% dplyr::mutate(
+        similarity = t(similarity_perm)[cbind(L1_bin, L2_bin)]
+      )
       score_matrix <- hourglass_score(aligned$path, modules)
-      # as.data.frame(
-      #   score_matrix
-      # ) %>% dplyr::mutate(
-      #   comparison = comparison_names,
-      #   permutation = sprintf("Permutation-%d", i),
-      #   seed = permutation_seeds[i]
-      # )
       data.frame(
-        rbind(score_matrix),
-        comparison = comparison_names,
+        rbind(score_matrix), comparison = comparison_names,
         permutation = sprintf("Permutation-%d", i),
-        seed = permutation_seeds[i], row.names = NULL, check.names = FALSE
+        seed = permutation_seeds_1[i], # Legacy alias ONLY; use seed_1 and seed_2.
+        seed_1 = permutation_seeds_1[i], seed_2 = permutation_seeds_2[i],
+        bin_order_1 = paste(order_1, collapse = ";"),
+        bin_order_2 = paste(order_2, collapse = ";"),
+        shuffle_hash_1 = hash_bin_shuffle(params$sample_id_1, bin_input_hash_1, bin_labels_1, order_1),
+        shuffle_hash_2 = hash_bin_shuffle(params$sample_id_2, bin_input_hash_2, bin_labels_2, order_2),
+        row.names = NULL, check.names = FALSE
       )
     }
   },
@@ -1569,7 +1572,7 @@ p_bootstrap_H
 
 ## Write key data
 
-Write one long CSV containing the observed scores and the complete permutation and bootstrap distributions. Both species are recorded explicitly; the legacy `sample_id` and `individual_id` fields identify the pair. A downstream biological-replicate analysis must account for any samples reused across pairs.
+Write one long CSV containing the observed scores and the complete permutation and bootstrap distributions. Both species are recorded explicitly; the legacy `sample_id` and `individual_id` fields identify the pair. A downstream biological-replicate analysis must account for any samples reused across pairs. The new permutation fields record both seeds and actual bin mappings; `seed` is a legacy alias for `seed_1`. Observed and bootstrap rows have missing per-permutation mapping fields. Bootstrap resampling itself is unchanged and is not asserted to be synchronized across pairs.
 
 ```{r Prepare key data}
 pair_metadata <- list(
@@ -1608,6 +1611,8 @@ permutation_key <- scores_perm %>%
     data_type = "permutation",
     replicate_id = permutation,
     seed = as.integer(seed),
+    seed_1 = as.integer(seed_1), seed_2 = as.integer(seed_2),
+    bin_order_1, bin_order_2, shuffle_hash_1, shuffle_hash_2,
     comparison,
     Early,
     Middle,
@@ -1642,6 +1647,17 @@ key_data <- dplyr::bind_rows(
     middle_cell_types = paste(middle_cell_types, collapse = ";"),
     middle_fraction = middle_fraction,
     query_species = species_1,
+    permutation_scheme = permutation_scheme,
+    permuted_sides = "1,2",
+    permutation_unit = "pseudobulk_bin",
+    permutation_alignment = "observed_path_fixed",
+    permutation_rng = permutation_rng,
+    permutation_master_seed_1 = schedule_1$master,
+    permutation_master_seed_2 = schedule_2$master,
+    bin_input_hash_1 = bin_input_hash_1,
+    bin_input_hash_2 = bin_input_hash_2,
+    permutation_bin_labels_1 = paste(bin_labels_1, collapse = "|"),
+    permutation_bin_labels_2 = paste(bin_labels_2, collapse = "|"),
     metric = as.character(params$metric),
     M_minus_E = Middle - Early,
     M_minus_L = Middle - Late,
@@ -1663,10 +1679,13 @@ key_data <- dplyr::bind_rows(
     batch,
     dplyr::all_of(names(pair_metadata)),
     focal_species, middle_cell_types, middle_fraction, query_species,
+    permutation_scheme, permuted_sides, permutation_unit, permutation_alignment,
+    permutation_rng, permutation_master_seed_1, permutation_master_seed_2,
+    bin_input_hash_1, bin_input_hash_2, permutation_bin_labels_1, permutation_bin_labels_2,
     metric,
     data_type,
     replicate_id,
-    seed,
+    seed, seed_1, seed_2, bin_order_1, bin_order_2, shuffle_hash_1, shuffle_hash_2,
     comparison,
     Early,
     Middle,
@@ -1736,6 +1755,17 @@ key_summary <- dplyr::bind_rows(
     middle_cell_types = paste(middle_cell_types, collapse = ";"),
     middle_fraction = middle_fraction,
     query_species = species_1,
+    permutation_scheme = permutation_scheme,
+    permuted_sides = "1,2",
+    permutation_unit = "pseudobulk_bin",
+    permutation_alignment = "observed_path_fixed",
+    permutation_rng = permutation_rng,
+    permutation_master_seed_1 = schedule_1$master,
+    permutation_master_seed_2 = schedule_2$master,
+    bin_input_hash_1 = bin_input_hash_1,
+    bin_input_hash_2 = bin_input_hash_2,
+    permutation_bin_labels_1 = paste(bin_labels_1, collapse = "|"),
+    permutation_bin_labels_2 = paste(bin_labels_2, collapse = "|"),
     metric = as.character(params$metric),
     n_cells = ncol(seurat_obj_1) + ncol(seurat_obj_2),
     n_cells_1 = ncol(seurat_obj_1),
@@ -1755,6 +1785,9 @@ key_summary <- dplyr::bind_rows(
     batch,
     dplyr::all_of(names(pair_metadata)),
     focal_species, middle_cell_types, middle_fraction, query_species,
+    permutation_scheme, permuted_sides, permutation_unit, permutation_alignment,
+    permutation_rng, permutation_master_seed_1, permutation_master_seed_2,
+    bin_input_hash_1, bin_input_hash_2, permutation_bin_labels_1, permutation_bin_labels_2,
     metric,
     comparison,
     Early,

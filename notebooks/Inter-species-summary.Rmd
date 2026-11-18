@@ -9,8 +9,10 @@ params:
   species_pairs: null                  # Ordered labels: e.g. lch__vs__egr.
   condition_1: "control"
   condition_2: "control"
-  permuted_side: 1                     # Source notebook permutes sample 1; fixes sample 2.
-  shared_query_mode: "bonferroni"       # bonferroni | error | synchronized
+  permuted_side: "both"                # Both samples are randomized; checked against CSV provenance.
+  shared_query_mode: "synchronized"     # synchronized | bonferroni | error (legacy parameter name).
+  group_bootstrap_replicates: 3000      # Plot interval: resample observed independent sample units.
+  group_bootstrap_seed: 120126
   adjust_method: "holm"
   alpha: 0.05
   bootstrap_interval_level: 0.90       # Diagnostic interval from saved bootstrap H.
@@ -28,26 +30,29 @@ recover these fields. **Keep species-pair orientation:** `lch__vs__egr` and
 `egr__vs__lch` are different analyses. Preserve the comparisons actually present;
 the uploaded example contains `Fiber-Fiber`, not both branches.
 
-The supplied source workflow randomizes sample 1 and holds sample 2 fixed. The
-joint mean test is therefore **conditional on the fixed reference datasets**.
-`permuted_side` must match the upstream workflow; the CSV alone does not prove
-which side was permuted. Changing this parameter cannot change saved permutations.
+The uploaded analysis notebooks randomize **pseudobulk-bin order in both samples**
+and evaluate similarities along each pair's **fixed observed DTW path**. Neither
+sample is a fixed reference for the randomization, although sample 1 remains the
+DTW query and defines the score's stages. This summary preserves that null model;
+it does not establish that fixing a data-derived alignment gives a calibrated
+biological no-hourglass test.
 
 ## Reused samples and the group P value
 
-* With distinct randomized biological individuals, use the existing joint mean-H
-  permutation test. Reuse of a fixed reference is allowed for this conditional
-  test, but does not create additional biological reference replicates.
-* With a reused randomized individual, the default `shared_query_mode: bonferroni`
-  uses `min(1, number_of_pairs * min(pair_P))`. This conservative global-null test
-  does not require pair independence. It is **not a test of mean H**; `p_joint`
-  and joint-null diagnostics are left `NA`, while `p_group` records the result.
-* `synchronized` explicitly asserts that the **same cell-to-pseudotime shuffle**
-  was reused in every pair containing the same randomized sample, within each
-  iteration. Matching seeds are checked but are insufficient proof: cell order,
-  eligible cells and upstream random calls must also match. Different randomized
-  individuals must have independent schedules. Never enable this merely to bypass
-  an error. `error` stops instead of using the conservative fallback.
+`shared_query_mode` is retained as a parameter name for existing rules, but its
+checks now cover **both sides**. The default `synchronized` mode requires the new
+CSV provenance: separate seeds, native-bin-input fingerprints, and actual bin
+mapping hashes for each sample. Every appearance of a sample must use the same
+input and transformation for the same iteration, even when its pair side changes.
+Different biological individuals must use different seed schedules. A matching
+seed alone is not accepted as proof of matching transformations.
+
+`bonferroni` remains an explicit fallback for groups reusing an individual on
+**either side**. It uses `min(1, number_of_pairs * min(pair_P))`; this is not a
+mean-H permutation test, and has no `p_joint` or mean-H null density. `error`
+rejects reuse instead. Legacy CSVs without both-side provenance can be used only
+for the Bonferroni fallback (or a single-pair test); synchronized joint means
+require regenerated outputs. Keep all analysis variants in separate renders.
 
 `p_group` is the raw P value used for the report's single Holm correction across
 all ordered species-pair × metric × comparison tests. For a permutation test it
@@ -61,7 +66,7 @@ concatenated across inputs. One row of `joint_null.csv` represents one joint
 randomized configuration, not one input or one biological replicate. The null
 standard deviation is not an estimate of between-plant variation.
 
-Inference remains conditional on the specified upstream randomized-pseudotime
+Inference remains conditional on the specified upstream both-sample bin-order
 null and any trajectories, feature sets, and stage definitions held fixed.
 A numerical audit does not establish exchangeability or validate those upstream
 choices. Rejection is not a claim that every sample has an effect.
@@ -216,13 +221,102 @@ component_summary <- function(components) {
     z
   }))
 }
-# A check for accidentally restarted schedules, not proof of stream independence.
-check_distinct_schedules <- function(p, labels) {
-  if (length(p) > 1L) for (i in 2:length(p)) for (j in seq_len(i - 1L)) {
-    if (identical(as.numeric(p[[i]]$seed), as.numeric(p[[j]]$seed))) {
-      fail("Identical seed schedules for independent units: ", labels[i], " / ", labels[j])
+# Match actual transformations and native-bin inputs for EVERY reused endpoint.
+hash_bin_shuffle <- function(sample_id, input_hash, bins, order) {
+  digest::digest(list(version = "both_bin_order_fixed_path_v1",
+                      sample_id = enc2utf8(as.character(sample_id)),
+                      input_hash = as.character(input_hash),
+                      target_bins = enc2utf8(as.character(bins)),
+                      source_bins = enc2utf8(as.character(bins[order]))),
+                 algo = "sha256", serializeVersion = 2)
+}
+check_both_side_sync <- function(selected) {
+  records <- lapply(selected, function(x) {
+    o <- x$observed; p <- x$permutation
+    required_sync <- c("permutation_scheme", "permuted_sides", "permutation_unit",
+                       "permutation_alignment", "permutation_rng",
+                       paste0("seed_", 1:2), paste0("bin_input_hash_", 1:2),
+                       paste0("shuffle_hash_", 1:2), paste0("bin_order_", 1:2),
+                       paste0("permutation_bin_labels_", 1:2))
+    if (!all(required_sync %in% names(p))) {
+      fail(o$sample_id, ": missing both-side synchronization provenance. Regenerate its key_data CSV.")
+    }
+    expected <- c(permutation_scheme = "both_bin_order_fixed_path_v1",
+                  permuted_sides = "1,2", permutation_unit = "pseudobulk_bin",
+                  permutation_alignment = "observed_path_fixed",
+                  permutation_rng = "Mersenne-Twister/Inversion/Rejection")
+    for (nm in names(expected)) {
+      v <- c(as.character(o[[nm]]), as.character(p[[nm]]))
+      if (anyNA(v) || length(unique(v)) != 1L || v[1] != expected[[nm]]) {
+        fail(o$sample_id, ": inconsistent or unsupported ", nm, ".")
+      }
+    }
+    lapply(1:2, function(side) {
+      id <- as.character(o[[paste0("sample_id_", side)]])
+      unit <- paste(o[[paste0("species_", side)]], o[[paste0("individual_id_", side)]], sep = "::")
+      seeds <- p[[paste0("seed_", side)]]
+      input_hash <- as.character(p[[paste0("bin_input_hash_", side)]])
+      hashes <- as.character(p[[paste0("shuffle_hash_", side)]])
+      labels <- as.character(p[[paste0("permutation_bin_labels_", side)]])
+      orders <- as.character(p[[paste0("bin_order_", side)]])
+      if (!is.numeric(seeds) || any(!is.finite(seeds)) || anyDuplicated(seeds) ||
+          any(seeds != floor(seeds)) || any(abs(seeds) > .Machine$integer.max)) {
+        fail(id, ": invalid per-sample permutation seed vector.")
+      }
+      if (anyNA(input_hash) || anyNA(hashes) ||
+          any(!grepl("^[0-9a-f]{64}$", input_hash)) ||
+          any(!grepl("^[0-9a-f]{64}$", hashes)) ||
+          length(unique(input_hash)) != 1L || anyNA(labels) ||
+          length(unique(labels)) != 1L || anyNA(orders)) fail(id, ": invalid shuffle provenance.")
+      if (as.character(o[[paste0("bin_input_hash_", side)]]) != input_hash[1] ||
+          as.character(o[[paste0("permutation_bin_labels_", side)]]) != labels[1]) {
+        fail(id, ": observed and permuted bin inputs disagree.")
+      }
+      bins <- strsplit(labels[1], "|", fixed = TRUE)[[1]]
+      if (length(bins) < 2L || any(!nzchar(bins)) || anyDuplicated(bins)) fail(id, ": invalid bin labels.")
+      for (b in seq_len(nrow(p))) {
+        order <- suppressWarnings(as.integer(strsplit(orders[b], ";", fixed = TRUE)[[1]]))
+        if (length(order) != length(bins) || anyNA(order) ||
+            !identical(sort(order), seq_along(bins))) fail(id, ": invalid stored bin permutation.")
+        expected_hash <- hash_bin_shuffle(id, input_hash[b], bins, order)
+        if (!identical(hashes[b], expected_hash)) fail(id, ": shuffle hash does not match the stored mapping.")
+      }
+      data.frame(sample_id = id, biological_unit = unit, pair_id = o$sample_id,
+                 side = side, iteration = p$iteration, seed = seeds,
+                 bin_input_hash = input_hash, shuffle_hash = hashes,
+                 bin_order = orders, stringsAsFactors = FALSE)
+    })
+  })
+  long <- bind_fill(unlist(records, recursive = FALSE))
+  by_unit <- split(long, long$biological_unit)
+  if (any(vapply(by_unit, function(z) length(unique(z$sample_id)) != 1L, logical(1)))) {
+    fail("Different preparations share a biological individual. Resolve replication before joint testing.")
+  }
+  signature <- lapply(by_unit, function(z) {
+    # Compare a sample even if it appears on different sides or in different species-pair groups.
+    for (nm in c("seed", "bin_input_hash", "shuffle_hash", "bin_order")) {
+      counts <- vapply(split(z[[nm]], z$iteration), function(v) length(unique(v)), integer(1))
+      if (any(counts != 1L)) fail(unique(z$sample_id), ": mismatched ", nm, " across reused appearances.")
+    }
+    if (length(unique(z$bin_input_hash)) != 1L) fail(unique(z$sample_id), ": different native-bin inputs.")
+    first <- z[z$pair_id == z$pair_id[1] & z$side == z$side[1], , drop = FALSE]
+    first[order(first$iteration), , drop = FALSE]
+  })
+  if (length(signature) > 1L) for (i in 2:length(signature)) for (j in seq_len(i - 1L)) {
+    a <- signature[[i]]; b <- signature[[j]]
+    common <- intersect(a$iteration, b$iteration)
+    if (length(common) && identical(as.numeric(a$seed[match(common, a$iteration)]),
+                                    as.numeric(b$seed[match(common, b$iteration)]))) {
+      fail(a$sample_id[1], " and ", b$sample_id[1], ": identical schedules for distinct biological samples.")
     }
   }
+  bind_fill(lapply(by_unit, function(z) {
+    data.frame(sample_id = z$sample_id[1], biological_unit = z$biological_unit[1],
+               sides = paste(sort(unique(z$side)), collapse = ","),
+               n_pair_appearances = length(unique(z$pair_id)),
+               n_iterations = length(unique(z$iteration)),
+               bin_input_hash = z$bin_input_hash[1], synchronization_verified = TRUE)
+  }))
 }
 mean_test <- function(selected) {
   p <- lapply(selected, function(x) x$permutation)
@@ -262,13 +356,24 @@ species_pairs_keep <- text_vector(params$species_pairs)
 if (anyNA(species_pairs_keep) || any(!nzchar(species_pairs_keep)) ||
     anyDuplicated(species_pairs_keep)) fail("Invalid species_pairs.")
 if (!scalar_text(params$condition_1) || !scalar_text(params$condition_2)) fail("Set both conditions.")
-if (!is.numeric(params$permuted_side) || length(params$permuted_side) != 1L ||
-    is.na(params$permuted_side) || !params$permuted_side %in% c(1, 2)) fail("Invalid permuted_side.")
+if (!identical(as.character(params$permuted_side), "both")) {
+  fail("This notebook summarizes both-sample randomizations: set permuted_side = 'both'.")
+}
+if (!requireNamespace("digest", quietly = TRUE)) fail("Install the digest package.")
+if (!is.numeric(params$group_bootstrap_replicates) || length(params$group_bootstrap_replicates) != 1L ||
+    !is.finite(params$group_bootstrap_replicates) || params$group_bootstrap_replicates < 2 ||
+    params$group_bootstrap_replicates != floor(params$group_bootstrap_replicates) ||
+    params$group_bootstrap_replicates > .Machine$integer.max) fail("Invalid group_bootstrap_replicates.")
+if (!is.numeric(params$group_bootstrap_seed) || length(params$group_bootstrap_seed) != 1L ||
+    !is.finite(params$group_bootstrap_seed) ||
+    params$group_bootstrap_seed != floor(params$group_bootstrap_seed) ||
+    abs(params$group_bootstrap_seed) > .Machine$integer.max) fail("Invalid group_bootstrap_seed.")
 if (!scalar_text(params$shared_query_mode) ||
     !params$shared_query_mode %in% c("bonferroni", "error", "synchronized")) {
   fail("Invalid shared_query_mode.")
 }
-sidecars <- file.path(outdir, c("pair_summary.csv", "joint_null.csv", "audit.csv"))
+sidecars <- file.path(outdir, c("pair_summary.csv", "joint_null.csv", "audit.csv",
+                                "synchronization_audit.csv"))
 if (path_summary %in% c(files, sidecars) || any(sidecars %in% files)) fail("Conflicting output paths.")
 
 # Diagnostics only: none of these functions changes the observed/permuted test.
@@ -282,7 +387,7 @@ if (!is.logical(params$diagnostic_plots) || length(params$diagnostic_plots) != 1
     is.na(params$diagnostic_plots)) fail("diagnostic_plots must be TRUE or FALSE.")
 
 # Read the saved bootstrap H values separately; NEVER put them in the null matrix.
-add_component_diagnostics <- function(tab, group_columns, unit_column) {
+add_component_diagnostics <- function(tab, group_columns) {
   raw <- lapply(files, function(path) {
     read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
   })
@@ -338,16 +443,14 @@ add_component_diagnostics <- function(tab, group_columns, unit_column) {
     warning("Saved bootstrap counts differ from declared n_bootstrap_valid; inspect component diagnostics.",
             call. = FALSE)
   }
-  # Descriptive influence check, not another hypothesis test. For inter-species
-  # pairs, remove ALL rows involving the same randomized biological individual.
-  tab$loo_unit <- as.character(tab[[unit_column]])
-  tab$mean_H_without_unit <- NA_real_
+  # Both endpoints are randomized. Omit all incident pairs for each endpoint separately.
+  tab$mean_H_without_individual_1 <- NA_real_
+  tab$mean_H_without_individual_2 <- NA_real_
   groups <- do.call(paste, c(tab[group_columns], sep = "\r"))
-  for (index in split(seq_len(nrow(tab)), groups)) {
-    for (i in index) {
-      retained <- index[tab$loo_unit[index] != tab$loo_unit[i]]
-      if (length(retained)) tab$mean_H_without_unit[i] <- mean(tab$H_observed[retained])
-    }
+  for (index in split(seq_len(nrow(tab)), groups)) for (i in index) for (side in 1:2) {
+    unit <- tab[[paste0("individual_key_", side)]][i]
+    retained <- index[tab$individual_key_1[index] != unit & tab$individual_key_2[index] != unit]
+    if (length(retained)) tab[[paste0("mean_H_without_individual_", side)]][i] <- mean(tab$H_observed[retained])
   }
   tab
 }
@@ -423,22 +526,15 @@ inputs <- lapply(files, function(path) {
   if (length(species_pairs_keep) && !d$species_pair[1] %in% species_pairs_keep) {
     fail(path, ": unexpected ordered species_pair.")
   }
-  side <- as.integer(params$permuted_side)
-  other <- 3L - side
-  d$randomized_sample <- d[[paste0("sample_id_", side)]]
-  d$fixed_sample <- d[[paste0("sample_id_", other)]]
-  d$randomized_individual <- paste(d[[paste0("species_", side)]],
-                                    d[[paste0("individual_id_", side)]], sep = "::")
-  d$fixed_individual <- paste(d[[paste0("species_", other)]],
-                               d[[paste0("individual_id_", other)]], sep = "::")
+  d$individual_key_1 <- paste(d$species_1, d$individual_id_1, sep = "::")
+  d$individual_key_2 <- paste(d$species_2, d$individual_id_2, sep = "::")
   d
 })
 scores <- bind_fill(inputs)
 if (!length(species_pairs_keep)) species_pairs_keep <- unique(scores$species_pair)
 if (!setequal(unique(scores$species_pair), species_pairs_keep)) fail("A requested species_pair is missing.")
 if (!length(comparisons_keep)) comparisons_keep <- sort(unique(scores$comparison))
-manifest_fields <- c("sample_id", metadata_fields, "species_pair", "randomized_sample",
-                     "fixed_sample", "randomized_individual", "fixed_individual")
+manifest_fields <- c("sample_id", metadata_fields, "species_pair", "individual_key_1", "individual_key_2")
 manifest <- unique(scores[c("source_file", "metric", manifest_fields)])
 if (anyDuplicated(manifest[c("sample_id", "metric")])) fail("Duplicate pair/metric input files.")
 pair_metadata <- unique(manifest[manifest_fields])
@@ -457,11 +553,22 @@ if (anyDuplicated(all_samples$sample)) fail("Inconsistent biological metadata fo
 components <- validate_components(scores, pair_metadata$sample_id, comparisons_keep)
 pair_summary <- component_summary(components)
 pair_summary$analysis_id <- params$analysis_id
-pair_summary <- add_component_diagnostics(
-  pair_summary, c("species_pair", "metric", "comparison"), "randomized_individual"
+pair_summary <- add_component_diagnostics(pair_summary, c("species_pair", "metric", "comparison"))
+# In strict mode, audit shared samples across ALL species-pair groups in this render.
+synchronization_audit <- data.frame(
+  metric = character(), comparison = character(), sample_id = character(),
+  biological_unit = character(), sides = character(), n_pair_appearances = integer(),
+  n_iterations = integer(), bin_input_hash = character(), synchronization_verified = logical()
 )
-pair_metadata[c("sample_id_1", "sample_id_2", "species_pair",
-                "randomized_individual", "fixed_individual")]
+if (params$shared_query_mode == "synchronized") {
+  checks <- expand.grid(metric = metrics_keep, comparison = comparisons_keep, stringsAsFactors = FALSE)
+  synchronization_audit <- bind_fill(lapply(seq_len(nrow(checks)), function(i) {
+    lookup <- data.frame(sample_id = pair_metadata$sample_id,
+                         metric = checks$metric[i], comparison = checks$comparison[i])
+    cbind(checks[i, , drop = FALSE], check_both_side_sync(components[key(lookup)]))
+  }))
+}
+pair_metadata[c("sample_id_1", "sample_id_2", "species_pair", "individual_key_1", "individual_key_2")]
 ```
 
 ## Group tests with dependence checks
@@ -490,10 +597,11 @@ results <- lapply(seq_len(nrow(tests)), function(i) {
     values <- unlist(lapply(selected, function(x) x$observed[[nm]]), use.names = FALSE)
     if (anyNA(values) || length(unique(values)) != 1L) fail(test$species_pair, ": mixed ", nm, ".")
   }
-  reused_query <- anyDuplicated(pm$randomized_individual) > 0L
-  fallback <- reused_query && params$shared_query_mode == "bonferroni"
-  if (reused_query && params$shared_query_mode == "error") {
-    fail(test$species_pair, ": randomized individuals are reused across pairs.")
+  all_units <- c(pm$individual_key_1, pm$individual_key_2)
+  reused_any <- anyDuplicated(all_units) > 0L
+  fallback <- reused_any && params$shared_query_mode == "bonferroni"
+  if (reused_any && params$shared_query_mode == "error") {
+    fail(test$species_pair, ": a randomized individual is reused on side 1 or side 2.")
   }
   meta <- data.frame(analysis_id = params$analysis_id, test,
                      species_1 = pm$species_1[1], species_2 = pm$species_2[1],
@@ -503,10 +611,13 @@ results <- lapply(seq_len(nrow(tests)), function(i) {
     n_pairs = length(ids), pairs = paste(ids, collapse = ";"),
     n_individuals_1 = length(unique(pm$individual_id_1)),
     n_individuals_2 = length(unique(pm$individual_id_2)),
-    n_randomized_individuals = length(unique(pm$randomized_individual)),
-    n_fixed_individuals = length(unique(pm$fixed_individual)),
-    reused_randomized_individual = reused_query,
-    n_randomization_units = length(unique(pm$randomized_individual)),
+    n_randomized_individuals = length(unique(all_units)),
+    n_fixed_individuals = 0L,
+    reused_randomized_individual = reused_any,
+    reused_individual_1 = anyDuplicated(pm$individual_key_1) > 0L,
+    reused_individual_2 = anyDuplicated(pm$individual_key_2) > 0L,
+    n_randomization_units = length(unique(all_units)),
+    synchronization_verified = FALSE,
     mean_H = mean(H), median_H = median(H), min_H = min(H), max_H = max(H),
     sd_H = if (length(H) > 1L) sd(H) else NA_real_,
     n_positive_H = sum(H > 0), fraction_positive_H = mean(H > 0)
@@ -546,25 +657,17 @@ results <- lapply(seq_len(nrow(tests)), function(i) {
     audit <- cbind(meta, data.frame(audit_pass = TRUE, null_max_abs_difference = NA_real_,
                                    p_recalculated = p_check))
   } else {
-    # Same randomized individual: identical shuffle across its reference pairings.
-    query_groups <- split(seq_along(ids), pm$randomized_individual)
-    if (reused_query) for (indices in query_groups) {
-      if (length(unique(pm$randomized_sample[indices])) != 1L) {
-        fail("Cannot synchronize different preparations from the same biological individual.")
-      }
-      first <- indices[1]
-      for (j in indices) if (!identical(as.numeric(p[[j]]$seed), as.numeric(p[[first]]$seed))) {
-        fail("Reused randomized sample has different schedules: ", pm$randomized_sample[first],
-             ". Regenerate synchronized shuffles, or use shared_query_mode = bonferroni.")
-      }
+    # New joint tests require both endpoint schedules and matching mapping hashes.
+    # A legacy single-pair P can be read without establishing cross-pair synchronization.
+    if (length(ids) > 1L || params$shared_query_mode == "synchronized") {
+      check_both_side_sync(selected)
+      summary$synchronization_verified <- TRUE
     }
-    representatives <- vapply(query_groups, function(x) x[1], integer(1))
-    check_distinct_schedules(p[representatives], pm$randomized_sample[representatives])
     r <- mean_test(selected)
-    summary$p_method <- if (length(ids) == 1L) "single_pair_permutation" else if (reused_query) {
-      "synchronized_query_mean_permutation"
-    } else "independent_query_mean_permutation"
-    summary$test_scope <- if (length(ids) == 1L) "single_pair" else "conditional_joint_pairs"
+    summary$p_method <- if (length(ids) == 1L) "single_pair_permutation" else {
+      "synchronized_both_samples_mean_permutation"
+    }
+    summary$test_scope <- if (length(ids) == 1L) "single_pair" else "both_samples_joint_pairs"
     summary$p_group <- summary$p_joint <- r$p
     summary$n_joint_permutation <- r$B
     summary$n_null_ge_observed <- r$k
@@ -582,6 +685,7 @@ results <- lapply(seq_len(nrow(tests)), function(i) {
                   data.frame(iteration = r$iterations, mean_H_null = r$null))
     audit <- cbind(meta, audit_mean(d, r))
   }
+  audit$synchronization_verified <- summary$synchronization_verified
   list(summary = summary, null = null, audit = audit)
 })
 summary_results <- bind_fill(lapply(results, function(x) x$summary))
@@ -611,17 +715,19 @@ write.csv(summary_results, path_summary, row.names = FALSE, na = "NA")
 write.csv(pair_summary, sidecars[1], row.names = FALSE, na = "NA")
 write.csv(joint_null, sidecars[2], row.names = FALSE, na = "NA")
 write.csv(audit, sidecars[3], row.names = FALSE, na = "NA")
+# Overwrite even in fallback mode, so an old synchronization audit cannot linger.
+write.csv(synchronization_audit, sidecars[4], row.names = FALSE)
 summary_results[c("species_pair", "metric", "comparison", "n_pairs", "n_individuals_1",
                   "n_individuals_2", "mean_H", "p_method", "n_joint_permutation",
                   "n_null_ge_observed", "p_resolution", "p_joint", "p_group",
-                  "p_adjusted", "hourglass_supported")]
+                  "p_adjusted", "synchronization_verified", "hourglass_supported")]
 ```
 
 `hourglass_supported` is an operational flag, not evidence of universal effects.
 For the fallback it additionally requires positive H in the pair supplying the
 minimum P. Always report `p_method`: **a Bonferroni global-pair test is not a
-mean-H permutation test**. A single randomized Lch preparation compared with
-several Egr references remains one randomized Lch preparation.
+mean-H permutation test**. A single Lch preparation compared with
+several Egr samples remains one Lch preparation, even though both sides are shuffled.
 
 The summary does not estimate population-average effects. Stage definitions,
 actual shuffle synchronization, pair-specific gene selection, and biological
@@ -640,21 +746,17 @@ was handled upstream. Bootstrap intervals do not determine any permutation P val
 are conditional on usable draws; missing H values or failed resamples can affect
 their interpretation. They do not by themselves establish nominal coverage.
 
-`mean_H_without_unit` is a **descriptive** leave-one-unit-out mean, without a P value
-or an additional significance flag. It is `NA` when no other unit remains.
-Negative and nonsignificant observed scores are retained. Component P values are
-unadjusted diagnostics, not the inputs to the group test.
-
-For inter-species results the omitted unit is the **randomized biological
-individual**: all its pairs are omitted together, not one pair at a time. With a
-single reused Lch individual this diagnostic is `NA`; multiple references do not
-create independent Lch replicates. Pair-level intervals are not combined across
-shared individuals.
+`mean_H_without_individual_1` and `mean_H_without_individual_2` are descriptive
+leave-one-individual-out means. Each omits all pairs incident to that endpoint,
+including appearances on the opposite side. With only one Lch individual, removing
+it leaves no pairs, so that value is `NA`. Neither endpoint is treated as fixed
+for the permutation test. Bootstrap uncertainty and permutation synchronization
+are separate: matching bin shuffles does not synchronize cell bootstrap draws.
 
 ```{r Pair summary}
 pair_summary[c("sample_id_1", "sample_id_2", "metric", "comparison", "H_observed",
                "H_bootstrap_lower", "H_bootstrap_upper", "bootstrap_n_finite",
-               "bootstrap_status", "mean_H_without_unit", "p_empirical")]
+               "bootstrap_status", "mean_H_without_individual_1", "mean_H_without_individual_2", "p_empirical")]
 ```
 
 ```{r Pair effect plots, fig.width=12, fig.height=6}
@@ -680,11 +782,214 @@ if (params$diagnostic_plots) {
 
 ```{r Numerical audit}
 audit
+synchronization_audit
 ```
 
 The audit independently reconstructs null means and P values, or reconstructs
 the Bonferroni combination directly from the component rows. Zero exceedances
 are shown as the resolution floor `1 / (B + 1)`. No new permutations are generated.
+
+## Species-pair × metric: aligned publication plots
+
+Each figure has **one row per ordered species pair × metric** (not one row per
+sample pair). Within each lineage comparison, rows are ordered by the reference
+species (Ptr → Egr → Lch) and then Jensen–Shannon → Pearson → Spearman.
+
+**When a valid joint mean-H null exists** (`p_method` indicates a joint
+permutation test), the turquoise ridges show its saved per-iteration means, the
+red ticks denote the observed mean H, and the text gives the one-sided group P
+value and Holm adjustment. For reused randomized samples using
+`shared_query_mode: bonferroni`, **there is no mean-H joint permutation null**;
+these rows instead show a labelled blank baseline with the observed *descriptive*
+mean and the **Bonferroni-combined `p_group`**. We do not pool pair-level null
+scores, invent a ridge, or label this P value as `p_joint`.
+
+The right-hand panel shows **observed mean H**. For a one-to-many design (e.g.
+one Lch and several independent Ptr samples), grey round-ended bars bootstrap
+the observed pair scores across the independent samples on the replicated side.
+They are approximate intervals **conditional on the one observed sample on the
+other side**; they do not incorporate that sample's cell-bootstrap uncertainty or
+estimate variation among Lch individuals. For disjoint pairs, observed pair scores
+are resampled as units. With a single pair, use its saved within-pair interval.
+For more complicated shared-endpoint designs, omit the group bar until a suitable
+joint bootstrap is available. Small numbers of biological samples limit interval
+reliability. No independently generated pairwise cell bootstraps are averaged
+into a purported synchronized group CI, and no CI affects a permutation P value.
+
+```{r Inter pair metric publication plots, fig.width=15, fig.height=7.2, dpi=160, results='asis'}
+if (isTRUE(params$diagnostic_plots)) {
+  if (!requireNamespace("ggplot2", quietly = TRUE) ||
+      !requireNamespace("patchwork", quietly = TRUE)) {
+    warning("Install ggplot2 and patchwork to draw the inter-species publication plots.",
+            call. = FALSE)
+  } else {
+    metric_order <- c("Jensen-Shannon", "pearson", "spearman")
+    species_order <- c("ptr", "egr", "lch", "tar")
+    species_label <- c("ptr" = "Ptr", "egr" = "Egr", "lch" = "Lch", "tar" = "Tar")
+    ridge_colors <- c("ptr" = "#A1CFD1", "egr" = "#69A5B8",
+                      "lch" = "#356E86", "tar" = "#8178A9")
+    metric_label <- c("Jensen-Shannon" = "Jensen–Shannon",
+                      "pearson" = "Pearson", "spearman" = "Spearman")
+    metric_colors <- c("Jensen-Shannon" = "#2B9E92",
+                       "pearson" = "#D77965", "spearman" = "#7C7EB8")
+
+    set.seed(as.integer(params$group_bootstrap_seed))
+    n_plot_boot <- as.integer(params$group_bootstrap_replicates)
+    group_ci <- do.call(rbind, lapply(seq_len(nrow(summary_results)), function(j) {
+      s <- summary_results[j, , drop = FALSE]
+      z <- pair_summary[pair_summary$species_pair == s$species_pair &
+                          pair_summary$metric == s$metric &
+                          pair_summary$comparison == s$comparison, , drop = FALSE]
+      stopifnot(nrow(z) == s$n_pairs, abs(mean(z$H_observed) - s$mean_H) < 1e-10)
+      n1 <- length(unique(z$individual_key_1))
+      n2 <- length(unique(z$individual_key_2))
+      m <- nrow(z)
+      lo <- hi <- NA_real_
+      status <- "requires_dependence_aware_joint_bootstrap"
+      if (m == 1L) {
+        lo <- z$H_bootstrap_lower; hi <- z$H_bootstrap_upper
+        status <- if (is.finite(lo) && is.finite(hi)) "single_pair_within_sample_only" else "no_interval"
+      } else if ((n1 == 1L && n2 == m) || (n2 == 1L && n1 == m) || (n1 == m && n2 == m)) {
+        combined <- replicate(n_plot_boot, mean(z$H_observed[sample.int(m, m, replace = TRUE)]))
+        ci <- unname(stats::quantile(combined,
+          probs = c((1 - params$bootstrap_interval_level) / 2,
+                    (1 + params$bootstrap_interval_level) / 2), type = 7))
+        lo <- ci[1]; hi <- ci[2]
+        status <- if (n1 == 1L) "sample2_bootstrap_conditional_on_single_sample1" else if (n2 == 1L) {
+          "sample1_bootstrap_conditional_on_single_sample2"
+        } else "independent_pair_bootstrap"
+      }
+      data.frame(species_pair = as.character(s$species_pair), metric = as.character(s$metric),
+                 comparison = as.character(s$comparison), ci_lower = lo, ci_upper = hi,
+                 ci_scope = status, stringsAsFactors = FALSE)
+    }))
+
+    plot_summary <- merge(summary_results, group_ci,
+                          by = c("species_pair", "metric", "comparison"),
+                          sort = FALSE, all.x = TRUE)
+    stopifnot(nrow(plot_summary) == nrow(summary_results))
+    utils::write.csv(plot_summary,
+                     file.path(outdir, "inter_pair_metric_effects.csv"),
+                     row.names = FALSE)
+
+    for (cmp in unique(plot_summary$comparison)) {
+      s <- plot_summary[plot_summary$comparison == cmp, , drop = FALSE]
+      s <- s[order(match(s$species_2, species_order),
+                   match(s$species_1, species_order),
+                   match(s$metric, metric_order)), , drop = FALSE]
+      s$y <- rev(seq_len(nrow(s)))
+      from <- unname(species_label[s$species_1])
+      to <- unname(species_label[s$species_2])
+      from[is.na(from)] <- s$species_1[is.na(from)]
+      to[is.na(to)] <- s$species_2[is.na(to)]
+      s$label <- sprintf("%s → %s · %s  (pairs=%d; n=%d/%d)",
+                         from, to, metric_label[s$metric], s$n_pairs,
+                         s$n_individuals_1, s$n_individuals_2)
+      s$p_annotation <- sprintf("Pgroup = %.3g",
+                                s$p_group)
+      s$has_joint_null <- !is.na(s$p_joint)
+      n <- joint_null[joint_null$comparison == cmp, , drop = FALSE]
+      xr <- range(c(n$mean_H_null, s$mean_H), finite = TRUE)
+      if (!is.finite(diff(xr)) || diff(xr) <= 0) xr <- xr + c(-0.01, 0.01)
+      pad <- max(0.07 * diff(xr), 0.008)
+      ridge <- do.call(rbind, lapply(seq_len(nrow(s)), function(i) {
+        if (!s$has_joint_null[i]) return(NULL)
+        v <- n$mean_H_null[n$species_pair == s$species_pair[i] &
+                             n$metric == s$metric[i]]
+        v <- v[is.finite(v)]
+        if (length(v) < 2L || length(unique(v)) < 2L) return(NULL)
+        de <- stats::density(v, from = xr[1] - pad, to = xr[2] + pad,
+                             n = 256L, na.rm = TRUE)
+        data.frame(x = de$x, ymin = s$y[i],
+                   ymax = s$y[i] + 0.72 * de$y / max(de$y),
+                   species_2 = s$species_2[i],
+                   id = paste(s$species_pair[i], s$metric[i], sep = "::"),
+                   stringsAsFactors = FALSE)
+      }))
+      p_perm <- ggplot2::ggplot() +
+        ggplot2::geom_hline(yintercept = s$y, colour = "#DEE7EC", linewidth = 0.4)
+      if (!is.null(ridge) && nrow(ridge)) {
+        p_perm <- p_perm + ggplot2::geom_ribbon(
+          data = ridge,
+          ggplot2::aes(x = x, ymin = ymin, ymax = ymax,
+                       group = id, fill = species_2), alpha = 0.96) +
+          ggplot2::scale_fill_manual(values = ridge_colors, guide = "none")
+      }
+      fallback_s <- s[!s$has_joint_null, , drop = FALSE]
+      if (nrow(fallback_s)) {
+        p_perm <- p_perm + ggplot2::geom_text(
+          data = fallback_s,
+          ggplot2::aes(x = xr[1], y = y + 0.24,
+                       label = "No joint null (Bonferroni)"),
+          hjust = 0, size = 3, colour = "#66727C")
+      }
+      p_perm <- p_perm +
+        ggplot2::geom_segment(
+          data = s, ggplot2::aes(x = mean_H, xend = mean_H,
+                                 y = y - 0.06, yend = y + 0.79),
+          colour = "#BD4B41", linewidth = 0.85) +
+        ggplot2::geom_text(
+          data = s, ggplot2::aes(x = xr[2] + 2.7 * pad, y = y + 0.25,
+                                 label = p_annotation),
+          hjust = 0, size = 3, colour = "#394654") +
+        ggplot2::scale_y_continuous(breaks = s$y, labels = s$label,
+          limits = c(0.65, nrow(s) + 1.15), expand = c(0, 0)) +
+        ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = c(0.025, 0.48))) +
+        ggplot2::coord_cartesian(clip = "off") +
+        ggplot2::labs(title = "Permutation distributions / group tests",
+          subtitle = "Vertical ticks: observed mean H; blank rows: Bonferroni combination",
+          x = "Mean H under both-sample bin shuffling (when available)", y = NULL) +
+        ggplot2::theme_classic(base_size = 11) +
+        ggplot2::theme(axis.text.y = ggplot2::element_text(size = 9, colour = "#243447"),
+          axis.ticks.y = ggplot2::element_blank(),
+          plot.title = ggplot2::element_text(face = "bold", size = 12),
+          plot.subtitle = ggplot2::element_text(size = 9),
+          plot.margin = ggplot2::margin(5, 15, 5, 5))
+
+      p_ci <- ggplot2::ggplot(s, ggplot2::aes(y = y)) +
+        ggplot2::geom_vline(xintercept = 0, linetype = "dashed",
+                            colour = "#C5CCD2", linewidth = 0.5) +
+        ggplot2::geom_segment(
+          data = s[is.finite(s$ci_lower) & is.finite(s$ci_upper), , drop = FALSE],
+          ggplot2::aes(x = ci_lower, xend = ci_upper, yend = y),
+          linewidth = 3.7, lineend = "round", colour = "#C6C9CE") +
+        ggplot2::geom_point(ggplot2::aes(x = mean_H, colour = metric), size = 3.4) +
+        ggplot2::scale_color_manual(values = metric_colors, guide = "none") +
+        ggplot2::scale_y_continuous(breaks = s$y, labels = rep("", nrow(s)),
+          limits = c(0.65, nrow(s) + 1.15), expand = c(0, 0)) +
+        ggplot2::labs(title = "Observed means & bootstrap intervals",
+          subtitle = sprintf("Grey: %.0f%% interval; target depends on replication (see text)",
+                             100 * params$bootstrap_interval_level),
+          x = "Observed mean hourglass score H", y = NULL) +
+        ggplot2::theme_classic(base_size = 11) +
+        ggplot2::theme(axis.text.y = ggplot2::element_blank(),
+          axis.ticks.y = ggplot2::element_blank(),
+          plot.title = ggplot2::element_text(face = "bold", size = 12),
+          plot.subtitle = ggplot2::element_text(size = 9),
+          plot.margin = ggplot2::margin(5, 5, 5, 5))
+      combined_plot <- p_perm + p_ci + patchwork::plot_layout(widths = c(1.9, 1))
+      cat("\n\n### ", cmp, "\n\n", sep = "")
+      print(combined_plot)
+      stem <- paste0("inter_pair_metric_", gsub("[^[:alnum:]_-]", "_", cmp))
+      ggplot2::ggsave(file.path(outdir, paste0(stem, ".png")),
+        plot = combined_plot, width = 10, height = 5.2,
+        units = "in", dpi = 300, bg = "white")
+      ggplot2::ggsave(file.path(outdir, paste0(stem, ".pdf")),
+        plot = combined_plot, width = 10, height = 5.2,
+        units = "in", bg = "white")
+      svg(
+        file.path(outdir, paste0(stem, ".svg")),
+        width = 10, 
+        height = 5.2
+      )
+      print(combined_plot)
+      dev.off()
+      cat("\n\nInterval scope: ", paste(unique(s$ci_scope), collapse = "; "),
+          ". Conditional intervals do not add biological replication to the single-sample side.\n\n", sep = "")
+    }
+  }
+}
+```
 
 ## Session information
 
