@@ -14,15 +14,16 @@ library(dplyr)
 # library(readxl)
 library(spacexr)
 library(magrittr)
+source("notebooks/scripts/hourglass_analysis.R")
 ```
 
 ```{r}
 # paths
-path_spaceranger_out <- "/home/f06b22037/SSD2/JW/spaceranger_count_TenX_stemQuanzi2024_v3/outs/"
-path_cellranger_out <- "outputs/cellranger/reanalyze/ptr_tenx_batch1_rs17/outs/filtered_feature_bc_matrix/"
-path_xylem_coordinate <- "/home/woodydrylab/FileShare/Stereoseq_raw_data/F24A040007172_PLAkisaT_0906/processed/JW/BGI_SAW_out/scRNA_stereo_visium/ClaBin100_PtrSpa_corrdinates_xylem_1116.xlsx"
-path_annot_info = "references/Ptr/annotation/Ptrichocarpa_533_v4.1.annotation_info.txt"
-path_cell_ident = "outputs/Populus/barcode2color/ptr_tenx_batch1_rs17_curated.csv"
+path_spaceranger_out <- "rawdata/Quanzi_Visium/spaceranger_count_TenX_stemQuanzi2024_v3/outs"
+path_cellranger_out <- "/home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr/outs/filtered_feature_bc_matrix.h5"
+# path_xylem_coordinate <- "/home/woodydrylab/FileShare/Stereoseq_raw_data/F24A040007172_PLAkisaT_0906/processed/JW/BGI_SAW_out/scRNA_stereo_visium/ClaBin100_PtrSpa_corrdinates_xylem_1116.xlsx"
+path_annot_info <- "references/Ptr/annotation/Ptrichocarpa_533_v4.1.annotation_info.txt"
+path_cell_ident <- "outputs/Hourglass/transfer_cell_label/ptr_tenx_batch1/cell_label.csv"
 ```
 
 ```{r}
@@ -32,7 +33,27 @@ sp_data <- Load10X_Spatial(
     filename = "filtered_feature_bc_matrix.h5",
     assay = "Spatial"
 )
-# xylem_coordinate <- read_excel(path_xylem_coordinate, sheet = "Ptr")
+sc_data <- CreateSeuratObject(
+  Read10X_h5(path_cellranger_out)
+)
+sc_data <- import_cell_label(
+  seurat_obj = sc_data,
+  cell_label_file =  path_cell_ident, 
+  cluster_levels = c(
+    "Fiber",
+    "Vessel",
+    "Fusiform Early Precursor",
+    "Fusiform Organizer",
+    "Ray Organizer",
+    "Ray Precursor",
+    "Fusiform Intermediate Precursor",
+    "Ray"
+  )
+)
+sc_data %<>% NormalizeData
+sc_data %<>% FindVariableFeatures
+sc_data %<>% ScaleData(., features = VariableFeatures(.))
+sc_data
 ```
 
 # Data Preprocessing
@@ -48,10 +69,13 @@ ggsave(
 )
 ```
 
-# Normalizing data using SCTransform
+# Normalizing data
 
 ```{r}
 sp_data <- SCTransform(sp_data, assay = "Spatial")
+# sp_data <- NormalizeData(sp_data, assay = "Spatial")
+# sp_data <- FindVariableFeatures(sp_data, assay = "Spatial")
+# sp_data <- ScaleData(sp_data, assay = "Spatial")
 ```
 
 #### Plot UMI/Feature Count
@@ -64,7 +88,7 @@ SpatialFeaturePlot(sp_data, features = "nCount_Spatial")
 # PCA-UMAP, clustering --\> plotting
 
 ```{r}
-sp_data <- RunPCA(sp_data, assay = "SCT", verbose = FALSE)
+sp_data <- RunPCA(sp_data, verbose = FALSE)
 sp_data <- FindNeighbors(sp_data, reduction = "pca", dims = 1:30)
 sp_data <- FindClusters(sp_data, verbose = FALSE)
 sp_data <- RunUMAP(sp_data, reduction = "pca", dims = 1:30)
@@ -127,7 +151,7 @@ for (i in 1:length(colors)) {
 
 ```{r}
 sp_data$seurat_clusters %<>% factor(
-  levels = c("0", "7", "4", "5", "1", "6", )
+  levels = c("0", "7", "4", "5", "1", "6")
 )
 plot1 <- VlnPlot(sp_data, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
 plot2 <- SpatialDimPlot(sp_data, group.by = "seurat_clusters") + theme(legend.position = "right")
@@ -139,104 +163,10 @@ ggsave(
 )
 ```
 
-# (Deprecated) DEG between secondary xylem and primary xylem
+# Splitting secondary xylem into 3 sub clusters
 
 ```{r}
-deg_df <- FindMarkers(sp_data, ident.1 = 1, ident.2 = 6)
-```
-
-# (Deprecated) Convert DEG names to Arabidopsis Gene ID (For running ShinyGO)
-
-```{r}
-annot_info <- read.delim(path_annot_info, header = TRUE, row.names = NULL)
-best_arabi_gene <- annot_info$best_arabi_gene
-names(best_arabi_gene) <- paste0(annot_info$locusName, ".v4.1")
-deg_df$best_ath <- best_arabi_gene[rownames(deg_df)]
-write.csv(x=deg_df, "outputs/notebook/Spatial/deg_outer_vs_inner.csv")
-```
-
-NOTE: water transportation is up-regulated in primary xylem
-
-# (Deprecated) Correlate single-cell and spatial data
-
-```{r}
-sc_data <- Read10X(data.dir=path_cellranger_out)
-cell_ident <- read.csv(path_cell_ident, header = TRUE, row.names = 1)
-cluster <- cell_ident$Cluster
-cluster[cluster == 1] <- "Vessel"
-cluster[cluster == 2] <- "FuIP"
-cluster[cluster == 3] <- "RO"
-cluster[cluster == 4] <- "RP"
-cluster[cluster == 5] <- "FuEP"
-cluster[cluster == 6] <- "FuO"
-cluster[cluster == 7] <- "Fiber"
-cluster[cluster == 8] <- "Ray"
-cluster[cluster == 9] <- "outlier1"
-cluster[cluster == 10] <- "outlier2"
-cluster[cluster == 11] <- "outlier3"
-names(cluster) <- rownames(cell_ident)
-sc_data <- CreateSeuratObject(counts = sc_data, project = "ptr_tenx_batch1_rs17")
-sc_data$cluster <- cluster
-Idents(sc_data) <- "cluster"
-```
-
-```{r}
-sc_data <- SCTransform(sc_data, verbose = FALSE)
-sc_data <- RunPCA(sc_data, verbose = FALSE)
-sc_data <- RunUMAP(sc_data, reduction = "pca", dims = 1:30)
-plot1 <- VlnPlot(sc_data, features = "nCount_RNA", pt.size = 0.1) + NoLegend()
-plot2 <- DimPlot(sc_data)
-wrap_plots(plot1, plot2)
-```
-
-# (Deprecated) Predict spatial cell type by single-cell annotation
-
-```{r}
-sp_xylem <- subset(sp_data, idents = c(1, 6))
-p <- SpatialDimPlot(sp_xylem, crop = FALSE, label = TRUE, pt.size.factor = 1, label.size = 3)
-p
-```
-
-```{r}
-anchors <- FindTransferAnchors(
-    reference = sc_data,
-    query = sp_xylem,
-    normalization.method = "SCT"
-)
-predictions.assay <- TransferData(
-    anchorset = anchors,
-    refdata = sc_data$cluster,
-    prediction.assay = TRUE,
-    weight.reduction = sp_xylem[["pca"]], 
-    dims = 1:30
-)
-sp_xylem[["predictions"]] <- predictions.assay
-```
-
-```{r}
-DefaultAssay(sp_xylem) <- "predictions"
-p <- SpatialFeaturePlot(
-    sp_xylem,
-    features = c(
-        "RO", "RP", "Ray",
-        "FuO", "FuEP", "FuIP",
-        "Fiber", "Vessel"
-    ),
-    pt.size.factor = 1.6, 
-    ncol = 3, 
-    crop = TRUE
-)
-ggsave(
-    "outputs/notebook/Spatial/sc-celltype_tissue_image_1&2.png",
-    width=14,
-    height=18
-)
-```
-
-# Try splitting secondary xylem to 3 sub clusters
-
-```{r}
-sp_xylem <- subset(sp_data, idents = c(1))
+sp_xylem <- subset(sp_data, idents = c(1, 5))
 SpatialDimPlot(sp_xylem)
 ```
 
@@ -258,33 +188,152 @@ xylem_cells <- Cells(sp_xylem)
 SpatialDimPlot(sp_xylem)
 ```
 
-# Measure the transcriptome variance in each sub-cluster
+Stratify xylem spots
 
-```{r}
-sp_xylem <- FindClusters(sp_xylem, resolution = 0.5, group.singletons = FALSE)
-SpatialDimPlot(sp_xylem, group.by = "seurat_clusters") + theme(legend.position = "right")
-```
+```{r stratify xylem spots}
+n_sector <- 20
+n_layer <- 4
 
-## Record clustering results
-
-```{r}
-sp_xylem_metadata <- sp_xylem@meta.data
-sp_xylem_metadata[sp_xylem_metadata$SCT_snn_res.0.5 == 0, "cluster"] <- "mid"
-sp_xylem_metadata[sp_xylem_metadata$SCT_snn_res.0.5 == 1, "cluster"] <- "early"
-sp_xylem_metadata[sp_xylem_metadata$SCT_snn_res.0.5 == 2, "cluster"] <- "late"
-sp_xylem$cluster <- factor(
-    sp_xylem_metadata$cluster, 
-    levels = c("early", "mid", "late")
+# Run after the existing pith/phloem spot exclusions.
+xy <- as.data.frame(
+    GetTissueCoordinates(sp_xylem)[Cells(sp_xylem), 1:2]
 )
-Idents(sp_xylem) <- "cluster"
+colnames(xy) <- c("x", "y")
+xy$barcode <- rownames(xy)
+
+# Approximate center of the stem; verify against the histology.
+center <- colMeans(xy[, c("x", "y")])
+
+xy$r <- sqrt((xy$x - center[1])^2 +
+             (xy$y - center[2])^2)
+xy$theta <- (atan2(xy$y - center[2],
+                   xy$x - center[1]) + 2*pi) %% (2*pi)
+xy$sector <- floor(xy$theta / (2*pi/ n_sector)) + 1L
+
+# Three radial bands within each angular sector.
+xy <- xy %>%
+    group_by(sector) %>%
+    mutate(
+        depth = (quantile(r, .95) - r) /
+                (quantile(r, .95) - quantile(r, .05)),
+        radial_layer = as.integer(
+            pmin(n_layer, pmax(1, floor(n_layer * depth) + 1))
+        )
+    ) %>%
+    ungroup()
+
+sp_xylem$radial_layer <- xy$radial_layer[
+    match(Cells(sp_xylem), xy$barcode)
+]
+
+p <- SpatialDimPlot(
+    sp_xylem,
+    group.by = "radial_layer",
+    crop = FALSE,
+    pt.size.factor = .7
+) +
+  # scale_fill_manual(
+  #   values = c("#9E0059", "#30638E", "#FF8811")
+  # ) + 
+  theme(legend.position = "none")
+p
+
+dirout_tmp <- file.path("outputs/notebook/Spatial/Revision")
+dir.create(dirout_tmp)
+ggsave(
+  filename = file.path(
+        dirout_tmp, "subplot_D.png"
+    ),
+    width=10,
+    height=8
+)
 ```
+
+```{r}
+# Original counts and SCT residuals
+raw <- GetAssayData(sp_xylem, assay = "Spatial", layer = "counts")
+sct <- GetAssayData(sp_xylem, assay = "SCT", layer = "scale.data")
+
+# Same genes and spots across comparisons
+spots <- Cells(sp_xylem)
+genes <- intersect(rownames(raw), rownames(sct))
+raw <- raw[genes, spots, drop = FALSE]
+sct <- sct[genes, spots, drop = FALSE]
+
+# Normalize using each spot's total counts across ALL genes
+totals <- Matrix::colSums(
+    GetAssayData(sp_xylem, assay = "Spatial", layer = "counts")[, spots]
+)
+logcpm <- log1p(raw %*% Matrix::Diagonal(x = 1e4 / totals))
+
+# Within-layer mean gene variance
+layer <- sp_xylem$radial_layer
+calc <- function(X) {
+    sapply(1:n_layer, function(k) {
+        mean(apply(
+            as.matrix(X[, which(layer == k), drop = FALSE]),
+            1, var
+        ))
+    })
+}
+
+V <- rbind(
+    raw_counts = calc(raw),
+    logCPM = calc(logcpm),
+    SCT_residuals = calc(sct)
+)
+V
+```
+
+```{r}
+# Calculate variation
+colnames(V) <- c("Cambium", "Outer", "Middle", "Inner")
+
+# Convert to long format; normalize each method to its outer layer
+df <- as.data.frame(as.table(V))
+colnames(df) <- c("method", "layer", "variance")
+
+df <- df %>%
+    group_by(method) %>%
+    mutate(relative = 100 * variance / variance[layer == "Cambium"]) %>%
+    ungroup()
+
+# Plot
+p <- ggplot(df, aes(layer, relative, color = method, group = method)) +
+    geom_hline(yintercept = 100, linetype = "dashed", color = "grey70") +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 3.5) +
+    scale_color_manual(values = c(
+        raw_counts = "#E67D74",
+        logCPM = "#1EAA78",
+        SCT_residuals = "#6697E8"
+    )) +
+    scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    labs(
+        title = "Transcriptomic heterogeneity across xylem layers",
+        subtitle = sprintf("%d sectors · %d radial layers · 3,000 HVGs", n_sector, n_layer),
+        x = "Radial layer (cambium side → pith side)",
+        y = "Variance relative to outer layer",
+        color = NULL
+    ) +
+    theme_classic(base_size = 13) +
+    theme(
+        plot.title = element_text(face = "bold"),
+        legend.position = "bottom"
+    )
+print(p)
+ggsave(
+  filename = file.path(dirout_tmp, "transcriptomic_heterogeneity.png"),
+  width=6,
+  height=4
+)
+```
+
+# OLD
 
 ### Try different color scheme for SpatialDimPlot
 
 ```{r}
-dirout_tmp <- file.path("outputs/notebook/Spatial/test4.1")
-dir.create(dirout_tmp)
-
 # plot
 p <- SpatialDimPlot(
         sp_xylem, crop = FALSE, pt.size.factor = .7
@@ -356,145 +405,14 @@ ggsave(
 )
 ```
 
-Calculate the distance between pairs of randomly sampled spot in each
-sub-cluster Distance functions
-
-```{r}
-# Manhattan
-manhattan.distance <- function(x, y) return(sum(abs(x-y)))
-
-# cosine
-cosine.similarity <- function(x, y) return(sum(x*y) / (sqrt(sum(x^2))*sqrt(sum(y^2))))
-cosine.distance <- function(x, y) return(1 - cosine.similarity(x, y))
-
-# euclidean
-euclidean.distance <- function(x, y) return(sqrt(sum((x - y)^2)))
-
-# spearman 
-spearman.cor <- function(x, y) return(cor(x, y, method="spearman"))
-spearman.distance <- function(x, y) return(1 - abs(spearman.cor(x, y)))
-
-# pearson 
-pearson.cor <- function(x, y) return(cor(x, y, method="pearson"))
-pearson.distance <- function(x, y) return(1 - abs(pearson.cor(x, y)))
-
-func <- list(
-    "manhattan" = manhattan.distance,
-    "cosine" = cosine.distance,
-    "euclidean" = euclidean.distance,
-    "spearman" = spearman.distance,
-    "pearson" = pearson.distance
-)
-```
-
-Calculate the pairwise distances between cells
-
-```{r}
-# the function to use
-for (metric in c("euclidean")) {
-    distance.function <- func[[metric]]
-    
-    # calculate
-    input.data <- GetAssayData(sp_xylem, assay = "SCT", layer = "data")
-    cell.distance <- CustomDistance(input.data, my.function = distance.function)
-    cell.distance <- as.matrix(cell.distance)
-    
-    # sampling
-    distances <- data.frame(matrix(nrow = 0, ncol = 4))
-    set.seed(42)
-    for (sub_cluster in c("early", "mid", "late")) {
-        cells <- rownames(sp_xylem@meta.data[sp_xylem@meta.data$cluster == sub_cluster, ])
-        for (i in 1:100) {
-            sampled <- sample(cells, size = 2, replace = FALSE)
-            sampled <- sort(sampled)
-            distance <- cell.distance[sampled[1], sampled[2]]
-            distances <- rbind(distances, list(sub_cluster, sampled[1], sampled[2], distance))
-        }
-    }
-    colnames(distances) <- c("sub_cluster", "cell_1", "cell_2", "distance")
-    
-    p <- ggplot(distances, aes(
-        x = factor(
-            sub_cluster,
-            levels = c("early", "mid", "late")
-        ), 
-        y = distance
-    )) + 
-        geom_violin(
-            aes(colour = sub_cluster)
-        ) + 
-        geom_jitter(aes(colour = sub_cluster), width = 0.2, size = .5) + 
-        # stat_summary(fun = "mean", geom = "point") + 
-        theme_classic() +
-        theme(legend.position = "none") +
-        labs(
-            x = NULL,
-            y = NULL,
-            title = NULL
-            # sprintf(
-            # "%s distance between 100 pairs of randomly sampled spots\nfrom each sub-cluster",
-            # metric)
-        ) +
-        scale_color_manual(values = c(
-            "early" = "#9F005A", 
-            "mid" = "#30638E", 
-            "late" = "#FF8811"))
-    
-    # save plot
-    svg(
-        filename = sprintf(
-            "outputs/notebook/Spatial/intra-cluster_%s-distance_by_sub-cluster_normalized.svg",
-            metric
-        ), 
-        width = 3,
-        height = 3
-    )
-    print(p)
-    dev.off()
-    
-    # ggsave(
-    #     filename = sprintf(
-    #         "outputs/notebook/Spatial/intra-cluster_%s-distance_by_sub-cluster_normalized.svg",
-    #         metric
-    #     ),
-    #     width = 8,
-    #     height = 8
-    # )
-}
-# print(p)
-# dev.off()
-```
-
-```{r}
-res <- wilcox.test(
-    subset(distances, distances$sub_cluster == "early")$distance,
-    subset(distances, distances$sub_cluster == "mid")$distance,
-    paired = FALSE,
-    alternative = "greater"
-)
-res
-```
-
-```{r}
-res <- wilcox.test(
-    subset(distances, distances$sub_cluster == "late")$distance,
-    subset(distances, distances$sub_cluster == "mid")$distance,
-    paired = FALSE,
-    alternative = "greater"
-)
-res
-```
-
-```{r}
-wilcox.test(distance ~ sub_cluster, data = distances, subset = distances$sub_cluster %in% c("early", "late"))
-```
-
 # Integrate single-cell & spatial data (deconvolution)
 
 ```{r}
 # remove outlier cells
-sc_data <- subset(sc_data, idents = c("outlier1", "outlier2", "outlier3"), invert = TRUE)
+valid_cells <- rownames(sc_data@meta.data)[!is.na(sc_data$cell_label)]
+sc_data <- subset(sc_data, cells = valid_cells)
 counts <- sc_data[["RNA"]]$counts
+sc_data$cluster <- sc_data$cell_label
 cluster <- as.factor(sc_data$cluster)
 nUMI <- sc_data$nCount_RNA
 levels(cluster) <- gsub("/", "-", levels(cluster))
@@ -513,26 +431,43 @@ query <- SpatialRNA(coords, counts_hd, colSums(counts_hd))
 
 ```{r}
 # run RCTD
-RCTD <- create.RCTD(query, reference, max_cores = 28)
-RCTD <- run.RCTD(RCTD, doublet_mode = "doublet")
+RCTD <- create.RCTD(query, reference, max_cores = 18)
+RCTD <- run.RCTD(RCTD, doublet_mode = "full")
 # add results back to Seurat object
 sp_xylem <- AddMetaData(sp_xylem, metadata = RCTD@results$results_df)
 ```
 
 ```{r}
-sp_xylem$celltypes <- paste(
-    RCTD@results$results_df$first_type,
-    RCTD@results$results_df$second_type,
-    sep = "-"
+# Obtain full-mode cell-type weights from the original spacexr RCTD
+W <- as.matrix(
+    spacexr::normalize_weights(RCTD@results$weights)
 )
-p <- SpatialDimPlot(sp_xylem, group.by = "first_type")
-ggsave(
-    filename = "outputs/notebook/Spatial/RCTD_first_type.png",
-    width = 8,
-    height = 8
+
+spots <- Cells(sp_xylem)
+W <- W[spots, , drop = FALSE]
+
+# Mean estimated cell-type proportions across radial layers
+cell_type_proportion <- aggregate(
+    W,
+    by = list(layer = sp_xylem$radial_layer),
+    FUN = mean
 )
-p
+p_proportion <- pheatmap::pheatmap(
+  cell_type_proportion %>% select(-layer),
+  scale = "none",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE, 
+  main = "RCTD weights"
+)
+p_proportion
+save_fig(
+  p_proportion,
+  file.path(dirout_tmp, "RCTD.svg"),
+  width = 7,
+  height = 4
+)
 ```
+
 
 # Integrate single-cell & spatial data as if integrating single-cell & single-cell data (not sure if valid)
 
