@@ -1,8 +1,8 @@
 from utils import functions
 N_PERMUTATIONS = 9999
 N_BOOTSTRAPS = 1000
-# N_PERMUTATIONS = 999
-# N_BOOTSTRAPS = 100
+N_PERMUTATIONS_DEBUG = 500
+N_BOOTSTRAPS_DEBUG = 100
 
 wildcard_constraints:
     sample="(lch|ptr|egr|tar)_(tenx|nextseq)_(batch|tsv)[0-9]",
@@ -480,7 +480,8 @@ rule inter_species_summary:
         audit="outputs/Hourglass-inter/{inter_workflow}/audit.csv",
         filenames="outputs/Hourglass-inter/{inter_workflow}/filenames.txt"
     params:
-        shared_query_mode="bonferroni"
+        permuted_side="both",
+        shared_query_mode="synchronized"
     log:
         "logs/Hourglass-inter/{inter_workflow}/summary.log"
     shell:
@@ -505,6 +506,7 @@ rule inter_species_summary:
                 path_filenames = manifest_path,
                 path_summary = summary_path,
                 analysis_id = '{wildcards.inter_workflow}',
+                permuted_side = '{params.permuted_side}',
                 shared_query_mode = '{params.shared_query_mode}'
             )
             rmarkdown::render(
@@ -589,4 +591,49 @@ rule qi_hourglass_summary:
                 params = render_params
             )
         " > {log:q} 2>&1
+        """
+
+
+rule validate_cell_label:
+    container: "docker://chiaenu/rstudio-seurat:5.0.0-spacexr-slingshot2.4.0-dtw-sccore-dosnow"
+    threads: 2
+    resources:
+        mem_mb=3000,
+        runtime=20
+    input:
+        rmd="notebooks/Validate_cell_labels.Rmd",
+        helper="notebooks/scripts/hourglass_analysis.R",
+        path_10x=lambda wildcards: functions.query(config["samples"], "name", wildcards.sample)["results_old"]["10x"],
+        path_cell_label="outputs/Hourglass/transfer_cell_label/{sample}/cell_label.csv",
+        path_known_markers="test/known_markers.tsv"
+    output:
+        outdir=directory("outputs/Hourglass/Validate_cell_labels/{sample}"),
+        html="outputs/Hourglass/Validate_cell_labels/{sample}/{sample}.html"
+    params:
+        path_intermediate="outputs/Hourglass/Validate_cell_labels/{sample}/rmd_intermediate/",
+        path_debug_figure="test-Hourglass/Validate_cell_labels/"
+    log:
+        "logs/Hourglass/Validate_cell_labels/{sample}.log"
+    shell:
+        """
+        Rscript -e "rmarkdown::render(
+            '{input.rmd}',
+            output_dir = '{output.outdir}',
+            output_file = basename('{output.html}'),
+            intermediates_dir = '{params.path_intermediate}',
+            knit_root_dir = '~',
+            clean = TRUE,
+            envir = new.env(parent = globalenv()),
+            params = list(
+                # global
+                path_known_markers = '{input.path_known_markers}',
+                path_helper = '{input.helper}',
+                
+                # sample-specific
+                sample_id = '{wildcards.sample}',
+                path_10x = '{input.path_10x}',
+                path_cell_label = '{input.path_cell_label}',
+                path_output = '{params.path_debug_figure}'
+            )
+        )" > {log} 2>&1 
         """

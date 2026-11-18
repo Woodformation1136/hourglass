@@ -1,0 +1,282 @@
+---
+params:
+  # global
+  path_known_markers: test/known_markers.tsv
+  path_orthogroup: outputs/ortholog_info.csv
+  path_shuai_orthogroups: references/Shuai_orthogroups/Orthogroups.txt
+  path_ptremula_best_hit: rawdata/AspWood/run-diamond/matches.tsv
+  path_helper: notebooks/scripts/hourglass_analysis.R
+  
+  # sample-wise
+  sample_id: ptr_tenx_batch1
+  path_10x: /home/woodydrylab/DiskArray/joweihsieh/SSD2/RK/1136project_SingleCell/results/Single_species_analysis/cellranger_reanalysis_TenX_Ptr
+  path_cell_label: outputs/Hourglass/transfer_cell_label/ptr_tenx_batch1/cell_label.csv
+  path_output: test/Hourglass/Validate_cell_labels/
+---
+
+# Validate cell label annotation
+
+## Setup
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(magrittr)
+source(params$path_helper)
+```
+
+
+```{r}
+params
+dir.create(params$path_output)
+```
+
+Global variables
+
+```{r}
+cluster_levels <- c(
+  "Fusiform Organizer",
+  "Fusiform Early Precursor",
+  "Fusiform Intermediate Precursor",
+  "Fiber",
+  "Vessel",
+  "Ray Organizer",
+  "Ray Precursor",
+  "Ray",
+  "Tracheid"
+)
+```
+
+Read data
+
+```{r Read data}
+# read count data
+path_mtx <- file.path(params$path_10x, "outs/filtered_feature_bc_matrix.h5")
+seurat_obj <- CreateSeuratObject(
+  Read10X_h5(path_mtx)
+)
+seurat_obj
+
+# import cell label
+seurat_obj <- import_cell_label(
+  seurat_obj, 
+  cell_label_file = params$path_cell_label, 
+  cluster_levels = cluster_levels
+)
+
+# read orthogroups
+orthogroup <- read.csv(params$path_orthogroup)
+head(orthogroup)
+
+# read known marker gene panel
+known_markers <- read.table(
+  params$path_known_markers, 
+  sep = "\t",
+  header = TRUE
+)
+head(known_markers)
+```
+
+### Match P. trichocarpa vs P. tremula gene ID
+
+```{r}
+ptr_matches <- read.table(params$path_ptremula_best_hit)
+colnames(ptr_matches) <- c(
+    "Query_accession",
+    "Target_accession",
+    "Sequence_identity",
+    "Length",
+    "Mismatches",
+    "Gap_openings",
+    "Query_start",
+    "Query_end",
+    "Target_start",
+    "Target_end",
+    "E_value",
+    "Bit_score"
+)
+dim(ptr_matches); head(ptr_matches)
+```
+
+Filter match results
+
+```{r}
+ptr_best_matches <- ptr_matches %>% 
+  arrange(Query_accession, desc(Sequence_identity)) %>%
+  distinct(Query_accession, .keep_all = TRUE)
+dim(ptr_best_matches)
+
+# 
+ptr_rbest_matches <- ptr_best_matches %>% 
+  arrange(Target_accession, desc(Sequence_identity)) %>%
+  distinct(Target_accession, .keep_all = TRUE)
+dim(ptr_rbest_matches)
+
+# show result
+head(ptr_rbest_matches)
+```
+
+Show the distribution of sequence similarity
+
+```{r}
+ptr_rbest_matches %>% 
+    ggplot(aes(x = Sequence_identity)) + 
+    geom_histogram(binwidth=.5) +
+    theme_classic() + 
+    labs(title = "
+Sequence similarity
+of P. trichocarpa & P. tremula reciprocal best-hits
+    ")
+```
+
+```{r}
+ptr_rbest_matches_90 <- subset(ptr_rbest_matches, ptr_rbest_matches$Sequence_identity > 90)
+ptr_rbest_matches_90$Target_accession %<>% sapply(function(x){sub("[0-9]*[.]p", "v4.1", x)})
+ptr_rbest_matches_90$Query_accession %<>% sapply(function(x){sub("[.][0-9]*[.]p", "", x)})
+tremula_2_trichocarpa <- as.vector(ptr_rbest_matches_90$Target_accession)
+names(tremula_2_trichocarpa) <- ptr_rbest_matches_90$Query_accession
+head(ptr_rbest_matches_90)
+```
+
+
+## Seurat preprocessing
+
+Normalize data
+
+```{r Normalize data}
+seurat_obj %<>% NormalizeData
+seurat_obj %<>% FindVariableFeatures
+seurat_obj %<>% ScaleData(., features = VariableFeatures(.))
+seurat_obj %<>% subset(cell_label %in% cluster_levels)
+seurat_obj
+```
+
+## Plot marker expressions
+
+Get marker orthogroups
+
+```{r}
+get_cla_ortholog <- function(cla_id) {
+  species_prefix <- switch(
+    params$sample_id %>% substr(1, 3),
+    "egr" = "Eucgr",
+    "ptr" = "Potri",
+    "lch" = "Lchi",
+    "tar" = "evm"
+  )
+  species_suffix <- switch(
+    params$sample_id %>% substr(1, 3),
+    "egr" = ".v2.0",
+    "ptr" = ".v4.1",
+    "lch" = "",
+    "tar" = ""
+  )
+  ortho_line <- system2(command = "grep", args = c("Cula0006341", params$path_shuai_orthogroups), stdout = TRUE)
+  ortho_line %>% strsplit(" ") %>% unlist %>% grep(species_prefix, ., value = TRUE) %>% paste0(species_suffix)
+}
+```
+
+Plot helper
+
+```{r}
+plot_marker <- function(features, title) {
+  DotPlot(
+    seurat_obj, 
+    features = features,
+    assay = "RNA",
+    cols = "Blues",
+    scale = TRUE,
+    dot.min = 0
+  ) +
+  scale_color_gradientn(
+      colours = c("grey95", "#9ecae1", "#3182bd", "#08519c")
+    ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  ) +
+  coord_flip() +
+  labs(
+    title = title
+  )
+}
+```
+
+```{r}
+for (i in seq_len(nrow(known_markers))) {
+  # get row slice
+  row_i <- known_markers[i, ]
+  gid <- row_i$Published.identifier
+  species <- row_i$Species...assay.host
+  markers <- NULL
+
+  if (grepl("POPTR", gid)) {
+    message("Phytozome down")
+    next
+  }
+  
+  # check if published id is available
+  if(nchar(gid) == 0) {
+    message("Empty identifier: ", row_i$Record)
+    next
+  }
+  
+  # if is P. tremula id
+  if (species == "Populus tremula x P. tremuloides (T89)") {
+    message("PlantGenie is down; no reference genome available for P tremula v2.2") # temp
+    next
+    gid <- ptr_rbest_matches_90 %>% filter(Query_accession == gid) %>% pull(Target_accession)
+  }
+  
+  idx <- grep(gid, orthogroup$gene_name)
+  if (identical(idx, integer(0))) {
+    message("Un-grep'ed")
+  } else {
+    cid <- orthogroup[idx, "cluster_id"] %>% unique
+    markers <- orthogroup %>%
+      filter(
+        cluster_id %in% cid,
+        species_name == switch(
+          substr(params$sample_id, 1, 3),
+          "ptr" = "PoT",
+          "egr" = "EuG",
+          "lch" = "LiC",
+          "tar" = "TrA"
+        )
+      ) %>% 
+      pull(gene_name)
+    if (identical(markers, character(0))) {
+      message("No ortholog")
+      next
+    }
+  }
+  
+  
+  if (is.null(markers) | identical(markers, character(0))) {
+    message("Null markers")
+    next
+  } else {
+    p <- plot_marker(
+        markers, 
+        title = row_i$Original.reported.cell.state
+      ) +
+      labs(
+        subtitle = row_i$Study,
+        caption = row_i$Record
+      )
+    save_fig(
+      p, 
+      file.path(
+        params$path_output, 
+        sprintf("%s_%s.svg", row_i$Record, params$sample_id)
+      ),
+      width = 8,
+      height = 4 + length(markers) * 0.2
+    )
+    print(p)
+  }
+}
+```
+
+

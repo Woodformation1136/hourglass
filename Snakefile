@@ -34,7 +34,8 @@ rule summary:
         ),
         "outputs/Hourglass-Qi/summary.html"
 
-rule all:
+
+rule hourglass_analysis:
     input:
         # intra-species comparisons
         expand(
@@ -94,5 +95,25 @@ rule all:
                 "Inter-species-hourglass",
                 # "Inter-species-hourglass_protoplasting-excluded"
                 # "Inter-species-hourglass_protoplasting-regressed"
+            ]
+        )
+
+
+rule validate_all:
+    input:
+        expand(
+            "outputs/Hourglass/Validate_cell_labels/{sample}/{sample}.html",
+            sample=[
+                "ptr_tenx_batch1",
+                "ptr_tenx_batch2",
+                "ptr_tenx_tsv1",
+                "ptr_tenx_tsv2",
+                "ptr_tenx_tsv3",
+                "ptr_tenx_tsv4",
+                "ptr_tenx_tsv5",
+                "egr_nextseq_batch1",
+                "egr_nextseq_batch2",
+                "egr_tenx_batch1",
+                "lch_tenx_batch1"
             ]
         )
