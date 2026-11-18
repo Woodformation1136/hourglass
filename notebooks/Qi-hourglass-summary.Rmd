@@ -544,6 +544,188 @@ if (params$diagnostic_plots) {
 audit
 ```
 
+## Qi metric-level publication plots
+
+The two aligned panels show **one row per similarity metric**, not one row per
+biological sample. If multiple lineage comparisons are present, each gets its
+own figure. The turquoise density is the saved **joint permutation distribution
+of mean H**, with a red tick for observed mean H and annotations for the raw
+and Holm-adjusted permutation P values.
+
+The grey round-ended bars are central `bootstrap_interval_level` percentile
+intervals of mean H from a two-stage bootstrap: resample independent biological
+replicates, then sample from each selected replicate's finite saved bootstrap H
+scores. These are approximate, descriptive hierarchical-bootstrap intervals,
+conditional on the upstream resampling scheme. They do not modify the joint
+permutation test. With just one biological replicate the bar represents
+**within-sample uncertainty only**. Spots/sections are not automatically
+independent biological replicates.
+
+```{r Qi metric publication plots, fig.width=13, fig.height=5.0, dpi=160, results='asis'}
+if (isTRUE(params$diagnostic_plots)) {
+  if (!requireNamespace("ggplot2", quietly = TRUE) ||
+      !requireNamespace("patchwork", quietly = TRUE)) {
+    warning("Install ggplot2 and patchwork to draw the Qi publication plots.",
+            call. = FALSE)
+  } else {
+    metric_order <- c("Jensen-Shannon", "pearson", "spearman")
+    metric_label <- c("Jensen-Shannon" = "Jensen–Shannon",
+                      "pearson" = "Pearson", "spearman" = "Spearman")
+    metric_colors <- c("Jensen-Shannon" = "#2B9E92",
+                       "pearson" = "#D77965", "spearman" = "#7C7EB8")
+
+    # Bootstrap rows are NOT permutations. No changes to p_joint.
+    bootstrap_parts <- lapply(files, function(path) {
+      d <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+      stopifnot(all(c("sample_id", "metric", "comparison", "data_type", "H") %in% names(d)))
+      if (!is.numeric(d$H)) stop("Non-numeric bootstrap H: ", path)
+      d[d$data_type == "bootstrap" & is.finite(d$H),
+        c("sample_id", "metric", "comparison", "H"), drop = FALSE]
+    })
+    boot_long <- do.call(rbind, bootstrap_parts)
+    rownames(boot_long) <- NULL
+    draw_key <- function(sample, metric, comparison) paste(sample, metric, comparison, sep = "\r")
+    boot_lookup <- split(boot_long$H,
+                         draw_key(boot_long$sample_id, boot_long$metric,
+                                  boot_long$comparison))
+    set.seed(120126L) # Affects these descriptive plot intervals ONLY.
+    n_plot_boot <- 3000L
+    group_ci <- do.call(rbind, lapply(seq_len(nrow(summary_results)), function(j) {
+      s <- summary_results[j, , drop = FALSE]
+      z <- sample_summary[sample_summary$metric == s$metric &
+                            sample_summary$comparison == s$comparison, , drop = FALSE]
+      stopifnot(nrow(z) == s$n_samples,
+                abs(mean(z$H_observed) - s$mean_H) < 1e-10)
+      draws <- lapply(seq_len(nrow(z)), function(i) {
+        a <- boot_lookup[[draw_key(z$sample_id[i], z$metric[i], z$comparison[i])]]
+        if (is.null(a)) numeric() else a
+      })
+      if (any(lengths(draws) < 2L)) {
+        lo <- hi <- NA_real_
+        status <- "insufficient_bootstrap_draws"
+      } else {
+        m <- length(draws)
+        combined <- replicate(n_plot_boot, {
+          idx <- sample.int(m, m, replace = TRUE)
+          mean(vapply(idx, function(k) sample(draws[[k]], 1L), numeric(1)))
+        })
+        prob <- c((1 - params$bootstrap_interval_level) / 2,
+                  (1 + params$bootstrap_interval_level) / 2)
+        ci <- unname(stats::quantile(combined, probs = prob, type = 7))
+        lo <- ci[1]; hi <- ci[2]
+        status <- if (m == 1L) "within_sample_only" else "hierarchical"
+      }
+      data.frame(metric = as.character(s$metric),
+                 comparison = as.character(s$comparison),
+                 ci_lower = lo, ci_upper = hi, ci_scope = status,
+                 stringsAsFactors = FALSE)
+    }))
+
+    plot_summary <- merge(summary_results, group_ci,
+                          by = c("metric", "comparison"), sort = FALSE, all.x = TRUE)
+    stopifnot(nrow(plot_summary) == nrow(summary_results))
+    utils::write.csv(plot_summary, file.path(outdir, "qi_metric_effects.csv"),
+                     row.names = FALSE)
+
+    for (cmp in unique(plot_summary$comparison)) {
+      s <- plot_summary[plot_summary$comparison == cmp, , drop = FALSE]
+      s <- s[order(match(s$metric, metric_order)), , drop = FALSE]
+      s$y <- rev(seq_len(nrow(s)))
+      s$label <- sprintf("%s · %s  (n=%d)",
+                         s$dataset, metric_label[s$metric], s$n_samples)
+      s$p_annotation <- sprintf("P = %.3g", s$p_joint)
+      n <- joint_null[joint_null$comparison == cmp, , drop = FALSE]
+      xr <- range(c(n$mean_H_null, s$mean_H), finite = TRUE)
+      if (!is.finite(diff(xr)) || diff(xr) <= 0) xr <- xr + c(-0.01, 0.01)
+      pad <- max(0.07 * diff(xr), 0.008)
+      ridge <- do.call(rbind, lapply(seq_len(nrow(s)), function(i) {
+        v <- n$mean_H_null[n$metric == s$metric[i]]
+        v <- v[is.finite(v)]
+        if (length(v) < 2L || length(unique(v)) < 2L) return(NULL)
+        de <- stats::density(v, from = xr[1] - pad, to = xr[2] + pad,
+                             n = 256L, na.rm = TRUE)
+        data.frame(x = de$x, ymin = s$y[i],
+                   ymax = s$y[i] + 0.72 * de$y / max(de$y),
+                   id = as.character(s$metric[i]), stringsAsFactors = FALSE)
+      }))
+      p_perm <- ggplot2::ggplot() +
+        ggplot2::geom_hline(yintercept = s$y, colour = "#DEE7EC", linewidth = 0.4)
+      if (!is.null(ridge) && nrow(ridge)) {
+        p_perm <- p_perm + ggplot2::geom_ribbon(
+          data = ridge,
+          ggplot2::aes(x = x, ymin = ymin, ymax = ymax, group = id),
+          fill = "#79B3C1", alpha = 0.96)
+      }
+      p_perm <- p_perm +
+        ggplot2::geom_segment(
+          data = s, ggplot2::aes(x = mean_H, xend = mean_H,
+                                 y = y - 0.06, yend = y + 0.79),
+          colour = "#BD4B41", linewidth = 0.85) +
+        ggplot2::geom_text(
+          data = s, ggplot2::aes(x = xr[2] + 2.7 * pad, y = y + 0.25,
+                                 label = p_annotation),
+          hjust = 0, size = 3, colour = "#394654") +
+        ggplot2::scale_y_continuous(breaks = s$y, labels = s$label,
+          limits = c(0.65, nrow(s) + 1.15), expand = c(0, 0)) +
+        ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = c(0.025, 0.45))) +
+        ggplot2::coord_cartesian(clip = "off") +
+        ggplot2::labs(title = "Permutation distributions",
+          subtitle = "Vertical ticks: observed mean H",
+          x = "Mean H under randomized pseudotime", y = NULL) +
+        ggplot2::theme_classic(base_size = 11) +
+        ggplot2::theme(axis.text.y = ggplot2::element_text(size = 10, colour = "#243447"),
+          axis.ticks.y = ggplot2::element_blank(),
+          plot.title = ggplot2::element_text(face = "bold", size = 12),
+          plot.subtitle = ggplot2::element_text(size = 9),
+          plot.margin = ggplot2::margin(5, 15, 5, 5))
+
+      p_ci <- ggplot2::ggplot(s, ggplot2::aes(y = y)) +
+        ggplot2::geom_vline(xintercept = 0, linetype = "dashed",
+                            colour = "#C5CCD2", linewidth = 0.5) +
+        ggplot2::geom_segment(
+          data = s[is.finite(s$ci_lower) & is.finite(s$ci_upper), , drop = FALSE],
+          ggplot2::aes(x = ci_lower, xend = ci_upper, yend = y),
+          linewidth = 3.7, lineend = "round", colour = "#C6C9CE") +
+        ggplot2::geom_point(ggplot2::aes(x = mean_H, colour = metric), size = 3.4) +
+        ggplot2::scale_color_manual(values = metric_colors, guide = "none") +
+        ggplot2::scale_y_continuous(breaks = s$y, labels = rep("", nrow(s)),
+          limits = c(0.65, nrow(s) + 1.15), expand = c(0, 0)) +
+        ggplot2::labs(title = "Observed means & bootstrap intervals",
+          subtitle = sprintf("Grey bars: %.0f%% percentile intervals",
+                             100 * params$bootstrap_interval_level),
+          x = "Observed mean hourglass score H", y = NULL) +
+        ggplot2::theme_classic(base_size = 11) +
+        ggplot2::theme(axis.text.y = ggplot2::element_blank(),
+          axis.ticks.y = ggplot2::element_blank(),
+          plot.title = ggplot2::element_text(face = "bold", size = 12),
+          plot.subtitle = ggplot2::element_text(size = 9),
+          plot.margin = ggplot2::margin(5, 5, 5, 5))
+      combined_plot <- p_perm + p_ci + patchwork::plot_layout(widths = c(1.9, 1))
+      cat("\n\n### ", cmp, "\n\n", sep = "")
+      print(combined_plot)
+      stem <- paste0("qi_metric_", gsub("[^[:alnum:]_-]", "_", cmp))
+      ggplot2::ggsave(file.path(outdir, paste0(stem, ".png")),
+        plot = combined_plot, width = 10, height = 3.2,
+        units = "in", dpi = 300, bg = "white")
+      ggplot2::ggsave(file.path(outdir, paste0(stem, ".pdf")),
+        plot = combined_plot, width = 10, height = 3.2,
+        units = "in", bg = "white")
+      svg(
+        file.path(outdir, paste0(stem, ".svg")),
+        width = 10, 
+        height = 3.2
+      )
+      print(combined_plot)
+      dev.off()
+      if (any(s$ci_scope == "within_sample_only")) {
+        cat("\n\nNote: Single-sample intervals reflect within-sample resampling",
+            "only, not between-individual biological uncertainty.\n\n")
+      }
+    }
+  }
+}
+```
+
 ## Session information
 
 ```{r Session information}

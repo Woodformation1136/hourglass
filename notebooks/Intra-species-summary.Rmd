@@ -2,7 +2,7 @@
 title: "Intra-species hourglass summary"
 params:
   path_filenames: archive2/Hourglass-intra/Intra-species-hourglass/filenames.txt
-  path_summary: archive2/Hourglass-intra/Intra-species-hourglass/summary_updated.csv
+  path_summary: archive3/Hourglass-intra/Intra-species-hourglass/summary_updated.csv
   analysis_id: Intra-species-hourglass
   species: !r c("egr", "lch", "ptr")
   metrics: !r c("spearman", "pearson", "Jensen-Shannon")
@@ -15,32 +15,50 @@ params:
 output:
   html_document:
     df_print: paged
-editor_options: 
-  markdown: 
-    wrap: 72
 ---
 
 # Joint evidence across samples
 
-For each **species × metric × comparison**, give each independent biological sample equal weight. Compare the observed mean of sample-specific hourglass scores with the means from matching permutation iterations:
+For each **species × metric × comparison**, give each independent biological
+sample equal weight. Compare the observed mean of sample-specific hourglass
+scores with the means from matching permutation iterations:
 
-$$
+\[
 T_{\mathrm{obs}}=\frac{1}{n}\sum_i H_i,
 \qquad
 T_b=\frac{1}{n}\sum_i H_{ib},
 \qquad
 P=\frac{1+\sum_b I(T_b\ge T_{\mathrm{obs}})}{B+1}.
-$$
+\]
 
-Use existing scores without re-estimating trajectories or generating new permutations. Bootstrap rows are not part of the permutation null. Iteration labels are aligned across samples; their randomizations must have been generated independently using sample-specific seeds. Observed and permuted scores must use the same gene set and analysis procedure within each input analysis.
+Use existing scores without re-estimating trajectories or generating new
+permutations. Bootstrap rows are not part of the permutation null. Iteration
+labels are aligned across samples; their randomizations must have been generated
+independently using sample-specific seeds. Observed and permuted scores must use
+the same gene set and analysis procedure within each input analysis.
 
-Apply **one multiple-testing correction across all species × metrics × selected comparisons in this render**, after calculating their raw joint P values. For three species, three metrics, and one comparison, this family has nine tests. Keep analysis versions and conditions in separate renders; do not select the version with the smaller P value.
+Apply **one multiple-testing correction across all species × metrics × selected
+comparisons in this render**, after calculating their raw joint P values.
+For three species, three metrics, and one comparison, this family has nine tests.
+Keep analysis versions and conditions in separate renders; do not select the
+version with the smaller P value.
 
-**The statistic is unchanged:** both the observed statistic and every joint-null statistic are arithmetic means across the same inputs. Null scores are **not** concatenated across inputs. One row of `joint_null.csv` represents one joint randomized configuration, not one input or one biological replicate. The null standard deviation is not an estimate of between-plant variation.
 
-Inference remains conditional on the specified upstream randomized-pseudotime null and any trajectories, feature sets, and stage definitions held fixed. A numerical audit does not establish exchangeability or validate those upstream choices. Rejection is not a claim that every sample has an effect.
+**The statistic is unchanged:** both the observed statistic and every joint-null
+statistic are arithmetic means across the same inputs. Null scores are **not**
+concatenated across inputs. One row of `joint_null.csv` represents one joint
+randomized configuration, not one input or one biological replicate. The null
+standard deviation is not an estimate of between-plant variation.
 
-Input filenames are read from `params$path_filenames` (one CSV path per line). The Snakemake rule writes an absolute-path manifest before rendering. For interactive Rmd debugging, provide your own manifest and set `path_filenames`, `path_summary`, and the required analysis identifiers through `params`.
+Inference remains conditional on the specified upstream randomized-pseudotime
+null and any trajectories, feature sets, and stage definitions held fixed.
+A numerical audit does not establish exchangeability or validate those upstream
+choices. Rejection is not a claim that every sample has an effect.
+
+Input filenames are read from `params$path_filenames` (one CSV path per line).
+The Snakemake rule writes an absolute-path manifest before rendering. For interactive
+Rmd debugging, provide your own manifest and set `path_filenames`, `path_summary`,
+and the required analysis identifiers through `params`.
 
 ## Setup
 
@@ -248,7 +266,11 @@ params
 
 ## Read and validate the key data
 
-Species is the prefix of `sample_id` before the first underscore. Each input file must contain one sample and one metric. Every declared sample must have every requested metric and comparison. `individual_id` is used to reject repeated individuals within a species-level test; metadata alone cannot establish that samples really are independent biological preparations.
+Species is the prefix of `sample_id` before the first underscore. Each input file
+must contain one sample and one metric. Every declared sample must have every
+requested metric and comparison. `individual_id` is used to reject repeated
+individuals within a species-level test; metadata alone cannot establish that
+samples really are independent biological preparations.
 
 ```{r Read key data}
 required <- c("sample_id", "individual_id", "condition", "metric", "comparison",
@@ -369,7 +391,10 @@ sample_metadata
 
 ## Joint permutation tests
 
-Use **all** saved permutation iterations. Require identical complete iteration-ID sets across samples in each test; do not match seeds or CSV row positions. Reject identical cross-sample seed schedules. Reuse of a sample's schedule across metrics is allowed. This diagnostic does not prove random-stream independence.
+Use **all** saved permutation iterations. Require identical complete iteration-ID
+sets across samples in each test; do not match seeds or CSV row positions.
+Reject identical cross-sample seed schedules. Reuse of a sample's schedule across
+metrics is allowed. This diagnostic does not prove random-stream independence.
 
 ```{r Joint tests}
 tests <- expand.grid(species = species_keep, metric = metrics_keep,
@@ -431,7 +456,9 @@ rownames(joint_null) <- NULL
 
 ## Multiple-testing correction
 
-The correction is applied **once to the complete vector of raw joint P values**. Sample-level P values are descriptive and are not inputs to this calculation. No correction is performed across permutation iterations.
+The correction is applied **once to the complete vector of raw joint P values**.
+Sample-level P values are descriptive and are not inputs to this calculation.
+No correction is performed across permutation iterations.
 
 ```{r Adjust P values}
 summary_results$p_adjusted <- stats::p.adjust(
@@ -452,17 +479,37 @@ summary_results[c("species", "metric", "comparison", "n_samples", "test_scope",
                   "hourglass_supported")]
 ```
 
-`hourglass_supported` requires a positive observed mean H and rejection of the joint randomized-pseudotime null at the chosen adjusted threshold. This is not a test that every sample has an effect or that the population-average true H is positive. For `test_scope = single_sample`, the raw joint P equals that sample's permutation P; it is **not evidence of biological replication**.
+`hourglass_supported` requires a positive observed mean H and rejection of the
+joint randomized-pseudotime null at the chosen adjusted threshold. This is not a
+test that every sample has an effect or that the population-average true H is
+positive. For `test_scope = single_sample`, the raw joint P equals that sample's
+permutation P; it is **not evidence of biological replication**.
 
-The number of preparations is recorded in `n_samples`. Sample IDs are treated as independent preparations only if the underlying experimental design supports that interpretation.
+The number of preparations is recorded in `n_samples`. Sample IDs are treated as
+independent preparations only if the underlying experimental design supports
+that interpretation.
 
-`summary.csv` contains joint tests and adjusted P values; `sample_summary.csv` contains component scores, unadjusted sample P values, and input provenance; `joint_null.csv` contains the combined permutation scores for auditing.
+`summary.csv` contains joint tests and adjusted P values; `sample_summary.csv`
+contains component scores, unadjusted sample P values, and input provenance;
+`joint_null.csv` contains the combined permutation scores for auditing.
+
 
 ## Individual effects and uncertainty
 
-Dots show **observed H**. Bars use the central `bootstrap_interval_level` percentile interval of the **saved, finite bootstrap H values for that input** (default 90%; type-7 quantiles). Missing bootstrap draws are reported, not replaced. These are within-input resampling intervals, **not between-plant uncertainty**, not species-level confidence intervals, and not evidence that spatial dependence was handled upstream. Bootstrap intervals do not determine any permutation P value. `bootstrap_n_*` columns distinguish saved, finite, and declared counts. Intervals are conditional on usable draws; missing H values or failed resamples can affect their interpretation. They do not by themselves establish nominal coverage.
+Dots show **observed H**. Bars use the central `bootstrap_interval_level`
+percentile interval of the **saved, finite bootstrap H values for that input**
+(default 90%; type-7 quantiles). Missing bootstrap draws are reported, not replaced.
+These are within-input resampling intervals, **not between-plant uncertainty**,
+not species-level confidence intervals, and not evidence that spatial dependence
+was handled upstream. Bootstrap intervals do not determine any permutation P value.
+`bootstrap_n_*` columns distinguish saved, finite, and declared counts. Intervals
+are conditional on usable draws; missing H values or failed resamples can affect
+their interpretation. They do not by themselves establish nominal coverage.
 
-`mean_H_without_unit` is a **descriptive** leave-one-unit-out mean, without a P value or an additional significance flag. It is `NA` when no other unit remains. Negative and nonsignificant observed scores are retained. Component P values are unadjusted diagnostics, not the inputs to the group test.
+`mean_H_without_unit` is a **descriptive** leave-one-unit-out mean, without a P value
+or an additional significance flag. It is `NA` when no other unit remains.
+Negative and nonsignificant observed scores are retained. Component P values are
+unadjusted diagnostics, not the inputs to the group test.
 
 ```{r Sample summary}
 sample_summary[c("species", "sample_id", "metric", "comparison", "H_observed",
@@ -478,7 +525,8 @@ if (params$diagnostic_plots) {
 
 ## Joint-null distributions
 
-The vertical line is the observed mean H. Histograms contain per-iteration **means**, never pooled individual null scores.
+The vertical line is the observed mean H. Histograms contain per-iteration
+**means**, never pooled individual null scores.
 
 ```{r Joint null plots, fig.width=8, fig.height=5}
 if (params$diagnostic_plots) {
@@ -488,9 +536,16 @@ if (params$diagnostic_plots) {
 
 ## Numerical audit and permutation resolution
 
-This section independently recomputes the observed mean and the per-iteration null means from the imported `scores` table using `aggregate()`, rather than the `components`/`cbind()` route above. It compares them with the exported results. This checks summary arithmetic, not the validity of the upstream pseudotime shuffling, gene selection, or biological-replicate assumptions.
+This section independently recomputes the observed mean and the per-iteration
+null means from the imported `scores` table using `aggregate()`, rather than the
+`components`/`cbind()` route above. It compares them with the exported results.
+This checks summary arithmetic, not the validity of the upstream pseudotime
+shuffling, gene selection, or biological-replicate assumptions.
 
-When `n_null_ge_observed = 0`, the P value is exactly `1 / (B + 1)`. Such tests share the minimum reportable P value for this permutation count; their effect sizes and underlying tail probabilities need not be equal. Zero exceedances do not establish that the underlying tail probability is zero or below this floor.
+When `n_null_ge_observed = 0`, the P value is exactly `1 / (B + 1)`. Such tests
+share the minimum reportable P value for this permutation count; their effect
+sizes and underlying tail probabilities need not be equal. Zero exceedances do
+not establish that the underlying tail probability is zero or below this floor.
 
 ```{r Independent numerical audit}
 pvalue_audit <- do.call(rbind, lapply(seq_len(nrow(summary_results)), function(i) {
@@ -553,13 +608,257 @@ pvalue_audit$audit_pass <- TRUE
 pvalue_audit
 ```
 
-No P values or testing families are changed by the audit. It stops if the two calculation routes disagree. `audit.csv` now records these checks on disk.
+No P values or testing families are changed by the audit. It stops if the two
+calculation routes disagree. `audit.csv` now records these checks on disk.
 
 ```{r Export audited tables}
 write.csv(summary_results, path_summary, row.names = FALSE, na = "NA")
 write.csv(sample_summary, sidecars[1], row.names = FALSE, na = "NA")
 write.csv(joint_null, sidecars[2], row.names = FALSE, na = "NA")
 write.csv(pvalue_audit, sidecars[3], row.names = FALSE, na = "NA")
+```
+
+
+## Species × metric: aligned permutation and bootstrap summaries
+
+The following two panels have **one row per species and metric**, ordered from
+**Ptr → Egr → Lch** and, within species, **Jensen–Shannon → Pearson → Spearman**.
+Individual samples are **not** plotted as separate rows. The turquoise ridges
+use the already calculated **joint null distribution of the mean H**; the dark
+red ticks indicate the observed mean H, with one-sided raw and Holm-adjusted
+joint P values annotated alongside. No permutation scores are pooled using
+`c(H_null)`.
+
+The grey rounded intervals in the companion plot are percentile intervals
+for the species-level mean H generated using a **hierarchical bootstrap**:
+resample biological samples with replacement, and sample a finite precomputed
+within-sample bootstrap H for each selected sample. This reflects both
+between-sample variation and available within-sample resampling uncertainty,
+*provided the samples are independent biological replicates*. With only one
+sample (Lch here), its interval necessarily reflects **within-sample
+resampling only**; it cannot quantify biological-population uncertainty.
+These diagnostic intervals do not alter the permutation tests or P values.
+
+```{r Species-metric publication plots, fig.width=14, fig.height=7.2, dpi=160, results='asis'}
+if (isTRUE(params$diagnostic_plots)) {
+  if (!requireNamespace("ggplot2", quietly = TRUE) ||
+      !requireNamespace("patchwork", quietly = TRUE)) {
+    warning("Install ggplot2 and patchwork to draw the species-metric plots.",
+            call. = FALSE)
+  } else {
+    metric_order <- c("Jensen-Shannon", "pearson", "spearman")
+    species_order <- c("ptr", "egr", "lch")
+    metric_label <- c("Jensen-Shannon" = "Jensen–Shannon",
+                      "pearson" = "Pearson", "spearman" = "Spearman")
+    species_label <- c("ptr" = "Ptr", "egr" = "Egr", "lch" = "Lch")
+    ridge_colors <- c("ptr" = "#A1CFD1", "egr" = "#69A5B8", "lch" = "#356E86")
+    metric_colors <- c("Jensen-Shannon" = "#2B9E92",
+                       "pearson" = "#D77965", "spearman" = "#7C7EB8")
+
+    # Load saved bootstrap scores; these draws are NOT permutation null scores.
+    bootstrap_parts <- lapply(files, function(path) {
+      d <- utils::read.csv(path, stringsAsFactors = FALSE,
+                           check.names = FALSE)
+      required <- c("sample_id", "metric", "comparison", "data_type", "H")
+      if (!all(required %in% names(d))) {
+        stop("Missing bootstrap columns in ", path, call. = FALSE)
+      }
+      d <- d[d$data_type == "bootstrap" & is.finite(d$H),
+             c("sample_id", "metric", "comparison", "H"), drop = FALSE]
+      d
+    })
+    boot_long <- do.call(rbind, bootstrap_parts)
+    rownames(boot_long) <- NULL
+    sample_key <- function(sample, metric, comparison) {
+      paste(sample, metric, comparison, sep = "\r")
+    }
+    boot_lookup <- split(boot_long$H,
+                         sample_key(boot_long$sample_id,
+                                    boot_long$metric, boot_long$comparison))
+
+    # Fixed seed: these bootstrap draws affect plots ONLY, never P values.
+    set.seed(120126L)
+    n_plot_boot <- 3000L
+    group_ci <- lapply(seq_len(nrow(summary_results)), function(j) {
+      s <- summary_results[j, , drop = FALSE]
+      z <- sample_summary[
+        sample_summary$species == s$species &
+        sample_summary$metric == s$metric &
+        sample_summary$comparison == s$comparison, , drop = FALSE
+      ]
+      stopifnot(nrow(z) == s$n_samples,
+                abs(mean(z$H_observed) - s$mean_H) < 1e-10)
+      draws <- lapply(seq_len(nrow(z)), function(i) {
+        a <- boot_lookup[[sample_key(z$sample_id[i],
+                                      z$metric[i], z$comparison[i])]]
+        if (is.null(a)) numeric() else a
+      })
+      if (any(lengths(draws) < 2L)) {
+        lo <- hi <- NA_real_
+        status <- "insufficient_bootstrap_draws"
+      } else {
+        # Two-stage bootstrap: resample biological samples, then the saved
+        # within-sample bootstrap scores of the selected sample.
+        m <- length(draws)
+        combined <- replicate(n_plot_boot, {
+          ids <- sample.int(m, size = m, replace = TRUE)
+          mean(vapply(ids, function(k) sample(draws[[k]], 1L), numeric(1)))
+        })
+        probs <- c((1 - params$bootstrap_interval_level) / 2,
+                   (1 + params$bootstrap_interval_level) / 2)
+        q <- unname(stats::quantile(combined, probs = probs, type = 7))
+        lo <- q[1]; hi <- q[2]
+        status <- if (m == 1L) "within_sample_only" else "hierarchical"
+      }
+      data.frame(species = as.character(s$species),
+                 metric = as.character(s$metric),
+                 comparison = as.character(s$comparison),
+                 ci_lower = lo, ci_upper = hi, ci_scope = status,
+                 stringsAsFactors = FALSE)
+    })
+    group_ci <- do.call(rbind, group_ci)
+
+    plot_summary <- merge(summary_results, group_ci,
+                          by = c("species", "metric", "comparison"),
+                          sort = FALSE, all.x = TRUE)
+    plot_summary <- plot_summary[
+      order(match(plot_summary$species, species_order),
+            match(plot_summary$metric, metric_order),
+            plot_summary$comparison), , drop = FALSE
+    ]
+
+    # The groups are separated by comparison when the notebook has >1.
+    for (cmp in unique(plot_summary$comparison)) {
+      s <- plot_summary[plot_summary$comparison == cmp, , drop = FALSE]
+      s <- s[order(match(s$species, species_order),
+                   match(s$metric, metric_order)), , drop = FALSE]
+      s$y <- rev(seq_len(nrow(s)))
+      s$label <- sprintf("%s · %s  (n=%d)",
+                         species_label[s$species], metric_label[s$metric], s$n_samples)
+      s$p_annotation <- sprintf("P = %.3g", s$p_joint)
+
+      n <- joint_null[joint_null$comparison == cmp, , drop = FALSE]
+      xr <- range(c(n$mean_H_null, s$mean_H), finite = TRUE)
+      if (!is.finite(diff(xr)) || diff(xr) <= 0) xr <- xr + c(-0.01, 0.01)
+      pad <- max(0.07 * diff(xr), 0.008)
+      n_grid <- 256L
+      ridge <- do.call(rbind, lapply(seq_len(nrow(s)), function(i) {
+        v <- n$mean_H_null[n$species == s$species[i] & n$metric == s$metric[i]]
+        v <- v[is.finite(v)]
+        if (length(v) < 2L || length(unique(v)) < 2L) return(NULL)
+        de <- stats::density(v, from = xr[1] - pad,
+                             to = xr[2] + pad, n = n_grid, na.rm = TRUE)
+        data.frame(x = de$x, ymin = s$y[i],
+                   ymax = s$y[i] + 0.72 * de$y / max(de$y),
+                   y = s$y[i], species = s$species[i],
+                   id = paste(s$species[i], s$metric[i], sep = "::"))
+      }))
+      if (is.null(ridge) || !nrow(ridge)) next
+
+      # Turquoise ridges; the observed species mean is a vertical red tick.
+      p_perm <- ggplot2::ggplot() +
+        ggplot2::geom_hline(yintercept = s$y, colour = "#DEE7EC",
+                            linewidth = 0.4) +
+        ggplot2::geom_ribbon(
+          data = ridge,
+          ggplot2::aes(x = x, ymin = ymin, ymax = ymax,
+                       group = id, fill = species), alpha = 0.96
+        ) +
+        ggplot2::geom_segment(
+          data = s,
+          ggplot2::aes(x = mean_H, xend = mean_H,
+                       y = y - 0.06, yend = y + 0.79),
+          colour = "#BD4B41", linewidth = 0.85
+        ) +
+        ggplot2::geom_text(
+          data = s,
+          ggplot2::aes(x = xr[2] + 2.7 * pad, y = y + 0.25,
+                       label = p_annotation),
+          hjust = 0, size = 3, colour = "#394654"
+        ) +
+        ggplot2::scale_fill_manual(values = ridge_colors, guide = "none") +
+        ggplot2::scale_y_continuous(
+          breaks = s$y, labels = s$label,
+          limits = c(0.65, nrow(s) + 1.15), expand = c(0, 0)
+        ) +
+        ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = c(0.025, 0.45))) +
+        ggplot2::coord_cartesian(clip = "off") +
+        ggplot2::labs(title = "Permutation distributions",
+                     subtitle = "Vertical ticks: observed species mean H",
+                     x = "Mean H under randomized pseudotime", y = NULL) +
+        ggplot2::theme_classic(base_size = 11) +
+        ggplot2::theme(
+          axis.text.y = ggplot2::element_text(size = 10, colour = "#243447"),
+          axis.ticks.y = ggplot2::element_blank(),
+          plot.title = ggplot2::element_text(face = "bold", size = 12),
+          plot.subtitle = ggplot2::element_text(size = 9),
+          plot.margin = ggplot2::margin(5, 15, 5, 5)
+        )
+
+      # Grey round-ended percentile intervals and metric-colored observed dots.
+      p_ci <- ggplot2::ggplot(s, ggplot2::aes(y = y)) +
+        ggplot2::geom_vline(xintercept = 0, linetype = "dashed",
+                            colour = "#C5CCD2", linewidth = 0.5) +
+        ggplot2::geom_segment(
+          data = s[is.finite(s$ci_lower) & is.finite(s$ci_upper), , drop = FALSE],
+          ggplot2::aes(x = ci_lower, xend = ci_upper, yend = y),
+          linewidth = 3.7, lineend = "round", colour = "#C6C9CE"
+        ) +
+        ggplot2::geom_point(
+          ggplot2::aes(x = mean_H, colour = metric), size = 3.4
+        ) +
+        ggplot2::scale_color_manual(values = metric_colors, guide = "none") +
+        ggplot2::scale_y_continuous(
+          breaks = s$y, labels = rep("", nrow(s)),
+          limits = c(0.65, nrow(s) + 1.15), expand = c(0, 0)
+        ) +
+        ggplot2::labs(title = "Observed means & bootstrap intervals",
+                     subtitle = sprintf("Grey bars: %.0f%% percentile intervals",
+                                        100 * params$bootstrap_interval_level),
+                     x = "Observed mean hourglass score H", y = NULL) +
+        ggplot2::theme_classic(base_size = 11) +
+        ggplot2::theme(
+          axis.text.y = ggplot2::element_blank(),
+          axis.ticks.y = ggplot2::element_blank(),
+          plot.title = ggplot2::element_text(face = "bold", size = 12),
+          plot.subtitle = ggplot2::element_text(size = 9),
+          plot.margin = ggplot2::margin(5, 5, 5, 5)
+        )
+      combined_plot <- p_perm + p_ci + patchwork::plot_layout(widths = c(1.9, 1))
+      cat("\n\n### ", cmp, "\n\n", sep = "")
+      print(combined_plot)
+      # Publication-ready vector and raster figures next to summary.csv.
+      plot_stem <- paste0("species_metric_", gsub("[^[:alnum:]_-]", "_", cmp))
+      ggplot2::ggsave(file.path(outdir, paste0(plot_stem, ".png")),
+                      plot = combined_plot, width = 10, height = 6.2,
+                      units = "in", dpi = 300, bg = "white")
+      ggplot2::ggsave(file.path(outdir, paste0(plot_stem, ".pdf")),
+                      plot = combined_plot, width = 10, height = 6.2,
+                      units = "in", bg = "white")
+      svg(
+        file.path(outdir, paste0(plot_stem, ".svg")),
+        width = 10, 
+        height = 6.2
+      )
+      print(combined_plot)
+      dev.off()
+      if (any(s$ci_scope == "within_sample_only")) {
+        cat("\n\nNote: Groups with one biological sample (e.g., Lch) have",
+            "within-sample bootstrap intervals only; no population-level",
+            "uncertainty can be estimated.\n\n")
+      }
+    }
+
+    utils::write.csv(
+      plot_summary,
+      file.path(outdir, "species_metric_effects.csv"),
+      row.names = FALSE
+    )
+    cat("\n\nThe plots summarize species-level mean H. For individual biological",
+        "sample scores and bootstrap intervals, use the sample diagnostics",
+        "reported earlier in this document.\n\n")
+  }
+}
 ```
 
 ## Session information
