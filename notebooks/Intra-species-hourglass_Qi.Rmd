@@ -884,7 +884,7 @@ scores_perm_list <- tryCatch(
       aligned_perm_i <- aligned_L1
       aligned_perm_i$path %<>% 
         mutate(
-          similarity = t(similarity_perm_i)[L1_bin, L2_bin]
+          similarity = t(similarity_perm_i)[cbind(L1_bin, L2_bin)]
         )
       
       # aligned_perm_i <- align_similarity_matrix(
@@ -1066,7 +1066,7 @@ run_bootstrap_once <- function(seed) {
     seurat_obj_i <- ScaleData(
       seurat_obj_i, features = VariableFeatures(seurat_obj_i), verbose = FALSE
     )
-    seurat_obj_i <- RunPCA(seurat_obj_i, npcs = 10, seed.use = 42, verbose = FALSE)
+    seurat_obj_i <- RunPCA(seurat_obj_i, npcs = 30, seed.use = 42, verbose = FALSE)
     
     # 3. Refit the two manually specified lineages.
     slingshot_res_i <- suppressWarnings(slingshot_manual_assign_start(seurat_obj_i, lineage_cell_types))

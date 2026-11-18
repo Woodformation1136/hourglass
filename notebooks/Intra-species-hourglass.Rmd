@@ -1058,7 +1058,7 @@ scores_perm_list <- tryCatch(
       aligned_L1_perm_i <- aligned_L1
       aligned_L1_perm_i$path %<>%
         mutate(
-          similarity = t(similarity_L1_perm_i)[L1_bin, L2_bin]
+          similarity = t(similarity_L1_perm_i)[cbind(L1_bin, L2_bin)]
         )
       
       # -------------------------------------
